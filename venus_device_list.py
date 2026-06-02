@@ -11,6 +11,8 @@ Example:
 
 import argparse
 import html
+import os
+import re
 import select
 import socket
 import struct
@@ -38,7 +40,9 @@ CAN_ID_MASK = 0x1FFFFFFF
 
 def configure_stdout():
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(line_buffering=True)
+        sys.stdout.reconfigure(line_buffering=True, write_through=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True, write_through=True)
 
 
 def debug(enabled, message):
@@ -70,6 +74,10 @@ def unpack_can_frame(raw_frame):
     }
 
 
+def payload_hex(payload):
+    return " ".join("{:02X}".format(byte) for byte in payload)
+
+
 def decode_bslbatt_device(frame):
     """
     Decode one passive CAN frame into a BSLBATT device record.
@@ -83,6 +91,20 @@ def decode_bslbatt_device(frame):
         description: user-visible product description
     """
     return None
+
+
+def list_available_can_interfaces():
+    """
+    Return available GX CAN interfaces matching Victron's can/vecan naming.
+
+    This intentionally only inspects existing interfaces. It does not change
+    bitrate, state, or any other CAN-bus setting.
+    """
+    try:
+        names = os.listdir("/sys/class/net")
+    except OSError:
+        return []
+    return sorted(name for name in names if re.match(r"^(can|vecan)[0-9]+$", name))
 
 
 def print_device(device, can_interface, product_id, manufacturer_type):
@@ -103,55 +125,94 @@ def print_device(device, can_interface, product_id, manufacturer_type):
     )
 
 
-def list_devices(args):
+def list_devices_on_interface(can_interface, args, found):
     try:
-        sock = open_can(args.can)
+        sock = open_can(can_interface)
     except OSError as exc:
-        debug(args.debug, "CAN init failed on {}: {}".format(args.can, exc))
+        debug(args.debug, "CAN init failed on {}: {}".format(can_interface, exc))
         return EXIT_CAN_INIT_ERROR
 
     deadline = time.monotonic() + args.timeout
-    found = set()
-    debug(args.debug, "Listening on {} for {:.1f}s".format(args.can, args.timeout))
+    debug(args.debug, "Listening on {} for {:.1f}s".format(can_interface, args.timeout))
 
-    while time.monotonic() < deadline:
-        wait = min(0.2, max(0.0, deadline - time.monotonic()))
-        try:
-            readable, _, _ = select.select([sock], [], [], wait)
-        except OSError as exc:
-            debug(args.debug, "CAN select failed: {}".format(exc))
-            return EXIT_CAN_COMM_ERROR
+    try:
+        while time.monotonic() < deadline:
+            wait = min(0.2, max(0.0, deadline - time.monotonic()))
+            try:
+                readable, _, _ = select.select([sock], [], [], wait)
+            except OSError as exc:
+                debug(args.debug, "CAN select failed on {}: {}".format(can_interface, exc))
+                return EXIT_CAN_COMM_ERROR
 
-        if not readable:
-            continue
+            if not readable:
+                continue
 
-        try:
-            raw_frame = sock.recv(CAN_FRAME_SIZE)
-        except OSError as exc:
-            debug(args.debug, "CAN receive failed: {}".format(exc))
-            return EXIT_CAN_COMM_ERROR
+            try:
+                raw_frame = sock.recv(CAN_FRAME_SIZE)
+            except OSError as exc:
+                debug(args.debug, "CAN receive failed on {}: {}".format(can_interface, exc))
+                return EXIT_CAN_COMM_ERROR
 
-        frame = unpack_can_frame(raw_frame)
-        if frame["is_error"] or frame["is_remote"]:
-            continue
+            frame = unpack_can_frame(raw_frame)
+            debug(
+                args.debug,
+                "RX {} id=0x{:08X} ext={} rtr={} err={} len={} data={}".format(
+                    can_interface,
+                    frame["can_id"],
+                    int(frame["is_extended"]),
+                    int(frame["is_remote"]),
+                    int(frame["is_error"]),
+                    len(frame["data"]),
+                    payload_hex(frame["data"]),
+                ),
+            )
+            if frame["is_error"] or frame["is_remote"]:
+                continue
 
-        device = decode_bslbatt_device(frame)
-        if device is None:
-            continue
+            device = decode_bslbatt_device(frame)
+            if device is None:
+                continue
 
-        key = "{}:{}".format(args.can, device["node_id"])
-        if key in found:
-            continue
-        found.add(key)
-        print_device(device, args.can, args.product_id, args.type)
+            key = "{}:{}".format(can_interface, device["node_id"])
+            if key in found:
+                continue
+            found.add(key)
+            print_device(device, can_interface, args.product_id, args.type)
+    finally:
+        sock.close()
 
     return EXIT_OK
 
 
+def list_devices(args):
+    interfaces = [args.can] if args.can else list_available_can_interfaces()
+    found = set()
+
+    if not interfaces:
+        debug(args.debug, "No can*/vecan* interfaces found")
+        return EXIT_OK
+
+    debug(args.debug, "Scanning CAN interfaces: {}".format(", ".join(interfaces)))
+    result = EXIT_OK
+    for can_interface in interfaces:
+        interface_result = list_devices_on_interface(can_interface, args, found)
+        if interface_result == EXIT_OK:
+            continue
+        if args.can:
+            return interface_result
+        result = interface_result
+
+    return result
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="List BSLBATT devices for Venus OS")
-    parser.add_argument("--list", action="store_true", help="list updatable devices")
-    parser.add_argument("-c", "--can", required=True, help="CAN interface, for example can0 or vecan0")
+    parser.add_argument("-l", "--list", action="store_true", help="list updatable devices")
+    parser.add_argument(
+        "-c",
+        "--can",
+        help="CAN interface, for example can0 or vecan0; omitted means scan all can*/vecan* interfaces",
+    )
     parser.add_argument("--timeout", type=float, default=3.0, help="passive discovery timeout in seconds")
     parser.add_argument("--product-id", default=PRODUCT_ID, help="Victron Product ID assigned by Victron")
     parser.add_argument("--type", default=MANUFACTURER_TYPE, help="manufacturer type used by VRM")
@@ -171,4 +232,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main() & 0xFF)

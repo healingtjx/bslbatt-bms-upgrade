@@ -19,6 +19,7 @@ import socket
 import struct
 import sys
 import time
+import zipfile
 
 
 EXIT_OK = 0
@@ -79,7 +80,9 @@ class MemoryErrorOnDevice(Exception):
 
 def configure_stdout():
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(line_buffering=True)
+        sys.stdout.reconfigure(line_buffering=True, write_through=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True, write_through=True)
 
 
 def debug(enabled, message):
@@ -105,9 +108,11 @@ def parse_connection(connection):
     if not match:
         raise ValueError("unsupported connection: {}".format(connection))
     can_interface = match.group(1)
+    if not re.match(r"^(can|vecan)[0-9]+$", can_interface):
+        raise ValueError("unsupported CAN interface: {}".format(can_interface))
     node_id = int(match.group(2), 0)
-    if node_id < 0:
-        raise ValueError("node id must be non-negative")
+    if node_id < 0 or node_id > CAN_ID_MASK:
+        raise ValueError("node id must be between 0 and 0x{:X}".format(CAN_ID_MASK))
     return can_interface, node_id
 
 
@@ -145,11 +150,39 @@ def unpack_can_frame(raw_frame):
     }
 
 
+def read_firmware_from_zip(path):
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            bad_member = archive.testzip()
+            if bad_member is not None:
+                raise OSError("zip CRC check failed for {}".format(bad_member))
+
+            candidates = []
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                name = os.path.basename(info.filename)
+                if not name or name.startswith("."):
+                    continue
+                if name.lower().endswith((".bin", ".fw", ".img")):
+                    candidates.append(info)
+
+            if len(candidates) != 1:
+                raise FirmwareError("zip package must contain exactly one .bin/.fw/.img firmware file")
+
+            return archive.read(candidates[0])
+    except zipfile.BadZipFile as exc:
+        raise OSError("invalid zip file: {}".format(exc))
+
+
 def read_firmware(path):
     if not os.path.isfile(path):
         raise OSError("firmware file does not exist: {}".format(path))
-    with open(path, "rb") as firmware_file:
-        data = firmware_file.read()
+    if zipfile.is_zipfile(path):
+        data = read_firmware_from_zip(path)
+    else:
+        with open(path, "rb") as firmware_file:
+            data = firmware_file.read()
     if not data:
         raise FirmwareError("firmware file is empty")
     return data
@@ -186,8 +219,14 @@ def validate_bslbatt_firmware(firmware):
     """
     if not firmware:
         raise FirmwareError("empty firmware")
+    transfer_size = ceil_div(len(firmware), BMS_UPGRADE_FRAME_DATA_SIZE) * BMS_UPGRADE_FRAME_DATA_SIZE
+    frame_count = transfer_size // BMS_UPGRADE_FRAME_DATA_SIZE
+    if transfer_size > 0xFFFFFFFF or frame_count > 0xFFFFFFFF:
+        raise FirmwareError("firmware is too large for BSLBATT CAN upgrade protocol")
     return {
         "size": len(firmware),
+        "transfer_size": transfer_size,
+        "frame_count": frame_count,
         "crc32": crc32_hex(firmware),
     }
 
@@ -207,8 +246,8 @@ class BslbattFirmwareUpdater:
         self.firmware_info = firmware_info
         self.debug_enabled = debug_enabled
         self.firmware_size = len(firmware)
-        self.transfer_size = ceil_div(self.firmware_size, BMS_UPGRADE_FRAME_DATA_SIZE) * BMS_UPGRADE_FRAME_DATA_SIZE
-        self.frame_count = self.transfer_size // BMS_UPGRADE_FRAME_DATA_SIZE
+        self.transfer_size = firmware_info["transfer_size"]
+        self.frame_count = firmware_info["frame_count"]
         self.sent_frame_count = 0
         self.next_offset = 0
         self.last_frame_tail = b"\x00\x00\x00\x00"
@@ -378,7 +417,13 @@ def update(args):
     try:
         can_interface, node_id = parse_connection(args.connection)
     except ValueError as exc:
+        xml_message("Invalid arguments")
         debug(args.debug, str(exc))
+        return EXIT_ARGUMENT_ERROR
+
+    if not os.path.isabs(args.file):
+        xml_message("Invalid arguments")
+        debug(args.debug, "firmware file path must be absolute: {}".format(args.file))
         return EXIT_ARGUMENT_ERROR
 
     try:
@@ -440,6 +485,8 @@ def update(args):
         xml_message("Update failed")
         debug(args.debug, repr(exc))
         return EXIT_GENERAL_ERROR
+    finally:
+        sock.close()
 
 
 def build_parser():
@@ -460,4 +507,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main() & 0xFF)

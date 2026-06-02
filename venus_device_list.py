@@ -29,6 +29,19 @@ EXIT_ARGUMENT_ERROR = 6
 MANUFACTURER_TYPE = "bslbatt"
 PRODUCT_ID = "TODO_PRODUCT_ID"
 DEVICE_DESCRIPTION = "BSLBATT BMS"
+DEFAULT_NODE_ID = 0
+
+CAN_ID_LIMITS = 0x351
+CAN_ID_SOC = 0x355
+CAN_ID_MEASUREMENTS = 0x356
+CAN_ID_ALARMS = 0x35A
+CAN_ID_MANUFACTURER = 0x35E
+CAN_ID_BATTERY_INFO = 0x35F
+CAN_ID_NAME_PART_1 = 0x370
+CAN_ID_NAME_PART_2 = 0x371
+CAN_ID_SERIAL_PART_1 = 0x380
+CAN_ID_SERIAL_PART_2 = 0x381
+CAN_ID_FAMILY = 0x382
 
 CAN_FRAME_FORMAT = "=IB3x8s"
 CAN_FRAME_SIZE = struct.calcsize(CAN_FRAME_FORMAT)
@@ -78,19 +91,144 @@ def payload_hex(payload):
     return " ".join("{:02X}".format(byte) for byte in payload)
 
 
-def decode_bslbatt_device(frame):
-    """
-    Decode one passive CAN frame into a BSLBATT device record.
+def read_le16(data, offset):
+    if len(data) < offset + 2:
+        return None
+    return data[offset] | (data[offset + 1] << 8)
 
-    Replace this function with the actual BSLBATT discovery/version protocol.
-    Return None when the frame is not a BSLBATT identification frame.
-    Return a dict with:
-        node_id: integer CAN node/address used by the updater
-        serial: user-visible serial number
-        version: current firmware version string
-        description: user-visible product description
+
+def decode_victron_ascii(payload):
     """
-    return None
+    Decode Victron BMS-CAN 7-bit ASCII fields.
+
+    NUL bytes are padding. Other control bytes are ignored so a noisy optional
+    field cannot leak unreadable characters into Venus OS XML output.
+    """
+    chars = []
+    for byte in payload:
+        if byte == 0:
+            continue
+        byte &= 0x7F
+        if 32 <= byte <= 126:
+            chars.append(chr(byte))
+    return "".join(chars).strip()
+
+
+def join_text_parts(*parts):
+    return "".join(part for part in parts if part).strip()
+
+
+def contains_bslbatt(value):
+    return "BSLBATT" in value.upper()
+
+
+class BmsCanLvDeviceState:
+    """
+    Collect Victron BMS-CAN LV frames for one CAN interface.
+
+    The protocol uses fixed 11-bit CAN identifiers instead of per-device node
+    addresses, so one scanned interface can only produce one updatable record.
+    """
+
+    def __init__(self, can_interface):
+        self.can_interface = can_interface
+        self.seen_battery_marker = False
+        self.seen_core_frame = False
+        self.seen_identity_frame = False
+        self.seen_bslbatt_identity = False
+        self.manufacturer = ""
+        self.family = ""
+        self.name_part_1 = ""
+        self.name_part_2 = ""
+        self.serial_part_1 = ""
+        self.serial_part_2 = ""
+        self.model = None
+        self.firmware_version = ""
+        self.online_capacity_ah = None
+
+    def update(self, frame):
+        if frame["is_extended"] or frame["is_remote"] or frame["is_error"]:
+            return
+
+        can_id = frame["can_id"]
+        payload = frame["data"]
+        if can_id in (CAN_ID_LIMITS, CAN_ID_SOC, CAN_ID_MEASUREMENTS, CAN_ID_ALARMS):
+            self.seen_core_frame = True
+        if can_id == CAN_ID_ALARMS:
+            self.seen_battery_marker = True
+        elif can_id == CAN_ID_MANUFACTURER:
+            self.manufacturer = decode_victron_ascii(payload)
+            self._record_identity_text(self.manufacturer)
+        elif can_id == CAN_ID_BATTERY_INFO:
+            self.model = read_le16(payload, 0)
+            self.online_capacity_ah = read_le16(payload, 4)
+            if len(payload) >= 4:
+                self.firmware_version = "{}.{}".format(payload[2], payload[3])
+        elif can_id == CAN_ID_NAME_PART_1:
+            self.name_part_1 = decode_victron_ascii(payload)
+            self._record_identity_text(self.name_part_1)
+        elif can_id == CAN_ID_NAME_PART_2:
+            self.name_part_2 = decode_victron_ascii(payload)
+            self._record_identity_text(self.name_part_2)
+        elif can_id == CAN_ID_SERIAL_PART_1:
+            self.serial_part_1 = decode_victron_ascii(payload)
+        elif can_id == CAN_ID_SERIAL_PART_2:
+            self.serial_part_2 = decode_victron_ascii(payload)
+        elif can_id == CAN_ID_FAMILY:
+            self.family = decode_victron_ascii(payload)
+            self._record_identity_text(self.family)
+
+    def _record_identity_text(self, value):
+        if value:
+            self.seen_identity_frame = True
+            if contains_bslbatt(value):
+                self.seen_bslbatt_identity = True
+
+    def is_bslbatt_candidate(self):
+        if not self.seen_battery_marker:
+            return False
+        if self.seen_bslbatt_identity:
+            return True
+        return not self.seen_identity_frame
+
+    def to_device(self):
+        if not self.is_bslbatt_candidate():
+            return None
+
+        serial = join_text_parts(self.serial_part_1, self.serial_part_2)
+        if not serial:
+            serial = self._fallback_serial()
+
+        return {
+            "node_id": DEFAULT_NODE_ID,
+            "serial": serial,
+            "version": self.firmware_version or "unknown",
+            "description": self._description(),
+        }
+
+    def _description(self):
+        name = join_text_parts(self.name_part_1, self.name_part_2)
+        if name:
+            return name
+        parts = []
+        if self.manufacturer:
+            parts.append(self.manufacturer)
+        if self.family:
+            parts.append(self.family)
+        if self.model is not None:
+            parts.append("model {}".format(self.model))
+        return " ".join(parts) if parts else DEVICE_DESCRIPTION
+
+    def _fallback_serial(self):
+        parts = []
+        if self.manufacturer:
+            parts.append(self.manufacturer)
+        if self.family:
+            parts.append(self.family)
+        if self.model is not None:
+            parts.append("model{}".format(self.model))
+        parts.append(self.can_interface)
+        return "-".join(parts)
 
 
 def list_available_can_interfaces():
@@ -133,6 +271,7 @@ def list_devices_on_interface(can_interface, args, found):
         return EXIT_CAN_INIT_ERROR
 
     deadline = time.monotonic() + args.timeout
+    device_state = BmsCanLvDeviceState(can_interface)
     debug(args.debug, "Listening on {} for {:.1f}s".format(can_interface, args.timeout))
 
     try:
@@ -166,20 +305,19 @@ def list_devices_on_interface(can_interface, args, found):
                     payload_hex(frame["data"]),
                 ),
             )
-            if frame["is_error"] or frame["is_remote"]:
-                continue
-
-            device = decode_bslbatt_device(frame)
-            if device is None:
-                continue
-
-            key = "{}:{}".format(can_interface, device["node_id"])
-            if key in found:
-                continue
-            found.add(key)
-            print_device(device, can_interface, args.product_id, args.type)
+            device_state.update(frame)
     finally:
         sock.close()
+
+    device = device_state.to_device()
+    if device is None:
+        debug(args.debug, "No BSLBATT BMS-CAN LV device found on {}".format(can_interface))
+        return EXIT_OK
+
+    key = "{}:{}".format(can_interface, device["node_id"])
+    if key not in found:
+        found.add(key)
+        print_device(device, can_interface, args.product_id, args.type)
 
     return EXIT_OK
 

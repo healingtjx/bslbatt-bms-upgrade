@@ -51,11 +51,13 @@ BMS_UPGRADE_FINISH_ACK_ID = 0x18A2AA55
 BMS_UPGRADE_ERROR_ID = 0x18A3AA55
 BMS_UPGRADE_FRAME_DATA_SIZE = 7
 BMS_UPGRADE_FRAME_TOTAL_SIZE = 8
-BMS_UPGRADE_ACK_BATCH_SIZE = 64
+# oldcode uses APP_BMS_UPGRADE_ACK_BATCH_SIZE; BMS_CAN.xlsx states the BMS
+# acknowledges once after every 10 firmware data frames.
+BMS_UPGRADE_ACK_BATCH_SIZE = 10
 BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS = 5.0
-BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS = 5.0
+BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS = 10.0
 BMS_UPGRADE_FINISH_ACK_TIMEOUT_SECONDS = 10.0
-BMS_UPGRADE_FRAME_INTERVAL_SECONDS = 0.0
+BMS_UPGRADE_FRAME_INTERVAL_SECONDS = 0.002
 
 
 class FirmwareError(Exception):
@@ -98,8 +100,15 @@ def xml_message(text):
     print('<message type="normal">{}</message>'.format(xml_escape(text)), flush=True)
 
 
+_last_progress_level = None
+
+
 def xml_progress(level):
+    global _last_progress_level
     level = max(0, min(100, int(level)))
+    if level == _last_progress_level:
+        return
+    _last_progress_level = level
     print('<progress level="{}" />'.format(level), flush=True)
 
 
@@ -184,7 +193,7 @@ def read_firmware(path):
         with open(path, "rb") as firmware_file:
             data = firmware_file.read()
     if not data:
-        raise FirmwareError("firmware file is empty")
+        raise OSError("firmware file is empty")
     return data
 
 
@@ -200,6 +209,40 @@ def read_le32(data):
     if len(data) < 4:
         return 0
     return struct.unpack("<I", data[:4])[0]
+
+
+def payload_hex(payload):
+    return " ".join("{:02X}".format(byte) for byte in payload)
+
+
+def can_id_name(can_id):
+    names = {
+        BMS_UPGRADE_START_REQ_ID: "START_REQ",
+        BMS_UPGRADE_START_ACK_ID: "START_ACK",
+        BMS_UPGRADE_DATA_ACK_ID: "DATA_ACK",
+        BMS_UPGRADE_FINISH_REQ_ID: "FINISH_REQ",
+        BMS_UPGRADE_FINISH_ACK_ID: "FINISH_ACK",
+        BMS_UPGRADE_ERROR_ID: "ERROR",
+    }
+    if can_id in names:
+        return names[can_id]
+    if can_id >= BMS_UPGRADE_DATA_FRAME_BASE_ID and (can_id & 0xFF000000) == 0x13000000:
+        return "DATA_FRAME"
+    return "UNKNOWN"
+
+
+def parse_control_payload(can_id, payload):
+    if len(payload) != BMS_UPGRADE_FRAME_TOTAL_SIZE:
+        return "invalid_len={}".format(len(payload))
+    if can_id == BMS_UPGRADE_ERROR_ID:
+        return "error_payload={}".format(payload.hex().upper())
+    if payload == b"\xFF" * BMS_UPGRADE_FRAME_TOTAL_SIZE:
+        return "all_ff=true"
+    if can_id in (BMS_UPGRADE_START_ACK_ID, BMS_UPGRADE_FINISH_ACK_ID):
+        return "image_size={} frame_count={}".format(read_le32(payload[:4]), read_le32(payload[4:8]))
+    if can_id == BMS_UPGRADE_DATA_ACK_ID:
+        return "acked_frame_count={} tail={}".format(read_le32(payload[:4]), payload[4:8].hex().upper())
+    return "le32_0={} le32_4={}".format(read_le32(payload[:4]), read_le32(payload[4:8]))
 
 
 def ceil_div(value, divisor):
@@ -239,18 +282,30 @@ class BslbattFirmwareUpdater:
     XML progress, line-buffered stdout, and standard exit codes.
     """
 
-    def __init__(self, sock, node_id, firmware, firmware_info, debug_enabled=False):
+    def __init__(self, sock, node_id, firmware, firmware_info, debug_enabled=False, can_log_path=None):
         self.sock = sock
         self.node_id = node_id
         self.firmware = firmware
         self.firmware_info = firmware_info
         self.debug_enabled = debug_enabled
+        self.can_log_path = can_log_path
+        self.can_log_failed = False
         self.firmware_size = len(firmware)
         self.transfer_size = firmware_info["transfer_size"]
         self.frame_count = firmware_info["frame_count"]
         self.sent_frame_count = 0
         self.next_offset = 0
         self.last_frame_tail = b"\x00\x00\x00\x00"
+        self.last_logged_progress = -1
+        self.write_can_log(
+            "START firmware_size={} transfer_size={} frame_count={} crc32={} node_id=0x{:X}".format(
+                self.firmware_size,
+                self.transfer_size,
+                self.frame_count,
+                self.firmware_info["crc32"],
+                self.node_id,
+            )
+        )
 
     def debug(self, message):
         debug(self.debug_enabled, message)
@@ -269,9 +324,10 @@ class BslbattFirmwareUpdater:
             if not readable:
                 return
             try:
-                self.sock.recv(CAN_FRAME_SIZE)
+                raw_frame = self.sock.recv(CAN_FRAME_SIZE)
             except OSError:
                 return
+            self.log_can_frame("RX_DRAIN", unpack_can_frame(raw_frame))
 
     def receive_control_frame(self, expected_can_id, timeout):
         deadline = time.monotonic() + timeout
@@ -286,6 +342,7 @@ class BslbattFirmwareUpdater:
 
             raw_frame = self.sock.recv(CAN_FRAME_SIZE)
             frame = unpack_can_frame(raw_frame)
+            self.log_can_frame("RX", frame, expected_can_id)
             if frame["is_error"] or frame["is_remote"] or not frame["is_extended"]:
                 continue
 
@@ -305,8 +362,48 @@ class BslbattFirmwareUpdater:
             return payload
 
     def log_rx(self, can_id, payload):
-        payload_hex = " ".join("{:02X}".format(byte) for byte in payload)
-        self.debug("RX id=0x{:08X} len={} data={}".format(can_id, len(payload), payload_hex))
+        self.debug("RX id=0x{:08X} len={} data={}".format(can_id, len(payload), payload_hex(payload)))
+
+    def write_can_log(self, line):
+        if not self.can_log_path or self.can_log_failed:
+            return
+        try:
+            with open(self.can_log_path, "a") as log_file:
+                log_file.write("{:.3f} {}\n".format(time.time(), line))
+        except OSError as exc:
+            self.can_log_failed = True
+            self.debug("CAN log write failed: {}".format(exc))
+
+    def log_can_frame(self, direction, frame, expected_can_id=None):
+        can_id = frame["can_id"]
+        payload = frame["data"]
+        flags = []
+        if frame["is_extended"]:
+            flags.append("EFF")
+        else:
+            flags.append("SFF")
+        if frame["is_remote"]:
+            flags.append("RTR")
+        if frame["is_error"]:
+            flags.append("ERR")
+        parsed = ""
+        if frame["is_extended"] and len(payload) > 0:
+            parsed = " parsed={}".format(parse_control_payload(can_id, payload))
+        expected = ""
+        if expected_can_id is not None:
+            expected = " expected=0x{:08X}".format(expected_can_id)
+        self.write_can_log(
+            "{} id=0x{:08X} name={} len={} flags={} data={}{}{}".format(
+                direction,
+                can_id,
+                can_id_name(can_id),
+                len(payload),
+                ",".join(flags) if flags else "-",
+                payload_hex(payload),
+                expected,
+                parsed,
+            )
+        )
 
     def size_and_count_payload(self):
         return le32(self.transfer_size) + le32(self.frame_count)
@@ -336,10 +433,12 @@ class BslbattFirmwareUpdater:
                 self.send_data_frame()
                 progress = 20 + int((self.sent_frame_count * 70) / max(1, self.frame_count))
                 xml_progress(min(89, progress))
+                self.log_transfer_progress("SEND")
                 if BMS_UPGRADE_FRAME_INTERVAL_SECONDS > 0:
                     time.sleep(BMS_UPGRADE_FRAME_INTERVAL_SECONDS)
 
             self.wait_data_ack(batch_target)
+            self.log_transfer_progress("ACK")
 
     def send_data_frame(self):
         chunk = self.firmware[self.next_offset : self.next_offset + BMS_UPGRADE_FRAME_DATA_SIZE]
@@ -360,6 +459,8 @@ class BslbattFirmwareUpdater:
             payload = self.receive_control_frame(BMS_UPGRADE_DATA_ACK_ID, BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS)
             acked_frame_count = read_le32(payload)
             tail = payload[4:8]
+            if payload == b"\xFF" * BMS_UPGRADE_FRAME_TOTAL_SIZE:
+                return
             if acked_frame_count != expected_frame_count:
                 self.debug(
                     "Ignore data ACK frameCount={}, expected={}".format(acked_frame_count, expected_frame_count)
@@ -371,6 +472,23 @@ class BslbattFirmwareUpdater:
                 )
                 continue
             return
+
+    def log_transfer_progress(self, stage):
+        percent = int((self.sent_frame_count * 100) / max(1, self.frame_count))
+        if stage != "ACK" and percent == self.last_logged_progress:
+            return
+        self.last_logged_progress = percent
+        self.write_can_log(
+            "PROGRESS stage={} sent_frames={}/{} sent_bytes={}/{} percent={} next_offset={}".format(
+                stage,
+                self.sent_frame_count,
+                self.frame_count,
+                min(self.next_offset, self.firmware_size),
+                self.firmware_size,
+                percent,
+                self.next_offset,
+            )
+        )
 
     def verify_firmware(self):
         return
@@ -445,7 +563,7 @@ def update(args):
         debug(args.debug, str(exc))
         return EXIT_CAN_INIT_ERROR
 
-    updater = BslbattFirmwareUpdater(sock, node_id, firmware, firmware_info, args.debug)
+    updater = BslbattFirmwareUpdater(sock, node_id, firmware, firmware_info, args.debug, args.can_log)
     try:
         updater.run()
         return EXIT_OK
@@ -495,6 +613,11 @@ def build_parser():
     parser.add_argument("-s", "--connection", required=True, help="connection from list XML, for example socketcan:can0/0x2A")
     parser.add_argument("-f", "--file", required=True, help="firmware file absolute path")
     parser.add_argument("-d", "--debug", action="store_true", help="write debug logs to stderr")
+    parser.add_argument(
+        "--can-log",
+        default="venus_firmware_update_can.log",
+        help="local file for parsed CAN RX logs; use an empty value to disable",
+    )
     return parser
 
 

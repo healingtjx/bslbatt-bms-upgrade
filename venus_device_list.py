@@ -11,11 +11,11 @@ Example:
 
 import argparse
 import html
-import os
 import re
 import select
 import socket
 import struct
+import subprocess
 import sys
 import time
 
@@ -39,6 +39,7 @@ CAN_ID_MANUFACTURER = 0x35E
 CAN_ID_BATTERY_INFO = 0x35F
 CAN_ID_NAME_PART_1 = 0x370
 CAN_ID_NAME_PART_2 = 0x371
+CAN_ID_DEVICE_MARKER = 0x375
 CAN_ID_SERIAL_PART_1 = 0x380
 CAN_ID_SERIAL_PART_2 = 0x381
 CAN_ID_FAMILY = 0x382
@@ -133,6 +134,7 @@ class BmsCanLvDeviceState:
     def __init__(self, can_interface):
         self.can_interface = can_interface
         self.seen_battery_marker = False
+        self.seen_device_marker = False
         self.seen_core_frame = False
         self.seen_identity_frame = False
         self.seen_bslbatt_identity = False
@@ -152,6 +154,9 @@ class BmsCanLvDeviceState:
 
         can_id = frame["can_id"]
         payload = frame["data"]
+        if can_id == CAN_ID_DEVICE_MARKER:
+            self.seen_device_marker = True
+
         if can_id in (CAN_ID_LIMITS, CAN_ID_SOC, CAN_ID_MEASUREMENTS, CAN_ID_ALARMS):
             self.seen_core_frame = True
         if can_id == CAN_ID_ALARMS:
@@ -185,6 +190,8 @@ class BmsCanLvDeviceState:
                 self.seen_bslbatt_identity = True
 
     def is_bslbatt_candidate(self):
+        if self.seen_device_marker:
+            return True
         if not self.seen_battery_marker:
             return False
         if self.seen_bslbatt_identity:
@@ -238,11 +245,12 @@ def list_available_can_interfaces():
     This intentionally only inspects existing interfaces. It does not change
     bitrate, state, or any other CAN-bus setting.
     """
+    command = "ip link show 2>/dev/null | grep -oE '(can|vecan)[0-9]' | sort -u"
     try:
-        names = os.listdir("/sys/class/net")
-    except OSError:
+        output = subprocess.check_output(command, shell=True, universal_newlines=True)
+    except (OSError, subprocess.CalledProcessError):
         return []
-    return sorted(name for name in names if re.match(r"^(can|vecan)[0-9]+$", name))
+    return [name for name in output.splitlines() if re.match(r"^(can|vecan)[0-9]+$", name)]
 
 
 def print_device(device, can_interface, product_id, manufacturer_type):

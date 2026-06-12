@@ -20,8 +20,10 @@ import html
 import os
 import re
 import select
+import signal
 import socket
 import struct
+import subprocess
 import sys
 import time
 import zipfile
@@ -113,6 +115,12 @@ class MemoryErrorOnDevice(Exception):
     pass
 
 
+# 升级期间需要临时停掉的 Venus OS 服务，避免它们继续往 can0 上发
+# 0x305/0x307 等 Victron CAN-BMS 帧干扰 BSLBATT BMS 升级。
+SERVICE_DIR = "/service"
+SERVICES_TO_STOP = ["can-bus-bms.can0"]
+
+
 def configure_stdout():
     """配置 stdout/stderr 为行缓冲，确保 Venus OS 能及时收到 XML 进度。"""
     if hasattr(sys.stdout, "reconfigure"):
@@ -125,6 +133,59 @@ def debug(enabled, message):
     """调试日志只写 stderr，避免破坏 stdout 上的 XML 协议。"""
     if enabled:
         print(message, file=sys.stderr, flush=True)
+
+
+def svc_path(name):
+    """允许传完整路径或服务名；统一拼成 /service/<name>。"""
+    if os.path.isabs(name):
+        return name
+    return os.path.join(SERVICE_DIR, name)
+
+
+def stop_service(name, debug_enabled=False):
+    """svc -d 把服务标记为 down；daemontools 会立刻发 SIGTERM。"""
+    path = svc_path(name)
+    debug(debug_enabled, "+ svc -d {}".format(path))
+    subprocess.run(["svc", "-d", path], check=True)
+
+
+def start_service(name, debug_enabled=False):
+    """svc -u 恢复服务为 up；失败不抛异常，避免影响其它服务恢复。"""
+    path = svc_path(name)
+    debug(debug_enabled, "+ svc -u {}".format(path))
+    subprocess.run(["svc", "-u", path], check=False)
+
+
+def stop_can_services(debug_enabled=False):
+    """
+    临时停掉占用 can0 的 Venus OS 服务，返回已停服务列表用于恢复。
+
+    跳过不存在的服务目录（例如非 Venus OS 环境），保证脚本仍可运行。
+    任意一个服务停止失败时，已停的会先恢复再抛出，避免半停状态。
+    """
+    stopped = []
+    try:
+        for name in SERVICES_TO_STOP:
+            if not os.path.isdir(svc_path(name)):
+                debug(debug_enabled, "skip stop, service not found: {}".format(svc_path(name)))
+                continue
+            stop_service(name, debug_enabled)
+            stopped.append(name)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        debug(debug_enabled, "stop service failed, restoring: {}".format(exc))
+        for name in reversed(stopped):
+            start_service(name, debug_enabled)
+        raise
+    return stopped
+
+
+def restore_services(stopped, debug_enabled=False):
+    """按相反顺序恢复之前停掉的服务。"""
+    for name in reversed(stopped):
+        try:
+            start_service(name, debug_enabled)
+        except Exception as exc:  # 兜底：恢复阶段不能抛异常导致其他服务漏恢复。
+            debug(debug_enabled, "restore service {} failed: {}".format(name, exc))
 
 
 def xml_escape(value):
@@ -664,59 +725,85 @@ def update(args):
         debug(args.debug, str(exc))
         return EXIT_FIRMWARE_ERROR
 
+    # 打开 CAN 之前先停掉占用 can0 的 Venus OS 服务，避免其他服务发的
+    # 0x305/0x307 帧干扰升级。停止失败也单独返回 CAN init 错误码。
     try:
-        # 只有文件和参数都通过后才打开 CAN；CAN 初始化失败单独返回退出码 2。
-        sock = open_can(can_interface)
-    except OSError as exc:
+        stopped_services = stop_can_services(args.debug)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
         xml_message("CAN init failed")
-        debug(args.debug, str(exc))
+        debug(args.debug, "stop can services failed: {}".format(exc))
         return EXIT_CAN_INIT_ERROR
 
-    updater = BslbattFirmwareUpdater(sock, node_id, firmware, firmware_info, args.debug, args.can_log)
+    # 安装信号处理器，确保被 Ctrl+C / SIGTERM 打断时也能恢复服务。
+    def _restore_on_signal(signum, _frame):
+        debug(args.debug, "received signal {}, restoring services".format(signum))
+        restore_services(stopped_services, args.debug)
+        # 透传信号语义：恢复默认处理器后重发，让进程按默认行为退出。
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    previous_sigint = signal.signal(signal.SIGINT, _restore_on_signal)
+    previous_sigterm = signal.signal(signal.SIGTERM, _restore_on_signal)
+
     try:
-        updater.run()
-        return EXIT_OK
-    # 下面的异常处理会把内部错误转换成 Venus OS 可识别的 XML 消息和退出码。
-    except NotImplementedError as exc:
-        xml_message("Update protocol is not implemented")
-        debug(args.debug, str(exc))
-        return EXIT_GENERAL_ERROR
-    except DeviceNotFoundError as exc:
-        xml_message("Device not found")
-        debug(args.debug, str(exc))
-        return EXIT_DEVICE_NOT_FOUND
-    except socket.timeout as exc:
-        xml_message("Device response timeout")
-        debug(args.debug, str(exc))
-        return EXIT_TIMEOUT
-    except MemoryErrorOnDevice as exc:
-        xml_message("Device memory error")
-        # 设备返回的错误帧详情对排查非常关键，无论是否开启 --debug 都打到 stderr。
-        print("device error: {}".format(exc), file=sys.stderr, flush=True)
-        return EXIT_MEMORY_ERROR
-    except VerifyTimeoutError as exc:
-        xml_message("Verification timeout")
-        debug(args.debug, str(exc))
-        return EXIT_VERIFY_TIMEOUT
-    except VerifyFailedError as exc:
-        xml_message("Verification failed")
-        debug(args.debug, str(exc))
-        return EXIT_VERIFY_FAILED
-    except OSError as exc:
-        xml_message("CAN communication failed")
-        debug(args.debug, str(exc))
-        return EXIT_CAN_COMM_ERROR
-    except FirmwareError as exc:
-        xml_message("Firmware error")
-        debug(args.debug, str(exc))
-        return EXIT_FIRMWARE_ERROR
-    except Exception as exc:
-        xml_message("Update failed")
-        debug(args.debug, repr(exc))
-        return EXIT_GENERAL_ERROR
+        try:
+            # 只有文件和参数都通过后才打开 CAN；CAN 初始化失败单独返回退出码 2。
+            sock = open_can(can_interface)
+        except OSError as exc:
+            xml_message("CAN init failed")
+            debug(args.debug, str(exc))
+            return EXIT_CAN_INIT_ERROR
+
+        updater = BslbattFirmwareUpdater(sock, node_id, firmware, firmware_info, args.debug, args.can_log)
+        try:
+            updater.run()
+            return EXIT_OK
+        # 下面的异常处理会把内部错误转换成 Venus OS 可识别的 XML 消息和退出码。
+        except NotImplementedError as exc:
+            xml_message("Update protocol is not implemented")
+            debug(args.debug, str(exc))
+            return EXIT_GENERAL_ERROR
+        except DeviceNotFoundError as exc:
+            xml_message("Device not found")
+            debug(args.debug, str(exc))
+            return EXIT_DEVICE_NOT_FOUND
+        except socket.timeout as exc:
+            xml_message("Device response timeout")
+            debug(args.debug, str(exc))
+            return EXIT_TIMEOUT
+        except MemoryErrorOnDevice as exc:
+            xml_message("Device memory error")
+            # 设备返回的错误帧详情对排查非常关键，无论是否开启 --debug 都打到 stderr。
+            print("device error: {}".format(exc), file=sys.stderr, flush=True)
+            return EXIT_MEMORY_ERROR
+        except VerifyTimeoutError as exc:
+            xml_message("Verification timeout")
+            debug(args.debug, str(exc))
+            return EXIT_VERIFY_TIMEOUT
+        except VerifyFailedError as exc:
+            xml_message("Verification failed")
+            debug(args.debug, str(exc))
+            return EXIT_VERIFY_FAILED
+        except OSError as exc:
+            xml_message("CAN communication failed")
+            debug(args.debug, str(exc))
+            return EXIT_CAN_COMM_ERROR
+        except FirmwareError as exc:
+            xml_message("Firmware error")
+            debug(args.debug, str(exc))
+            return EXIT_FIRMWARE_ERROR
+        except Exception as exc:
+            xml_message("Update failed")
+            debug(args.debug, repr(exc))
+            return EXIT_GENERAL_ERROR
+        finally:
+            # 无论成功失败都关闭 CAN socket，释放接口资源。
+            sock.close()
     finally:
-        # 无论成功失败都关闭 CAN socket，释放接口资源。
-        sock.close()
+        # 恢复信号处理器，再恢复服务，保证升级走完后 Venus OS 服务回到原状态。
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        restore_services(stopped_services, args.debug)
 
 
 def build_parser():

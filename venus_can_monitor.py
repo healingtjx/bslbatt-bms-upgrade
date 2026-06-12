@@ -28,6 +28,55 @@ CAN_RTR_FLAG = 0x40000000
 CAN_ERR_FLAG = 0x20000000
 CAN_ID_MASK = 0x1FFFFFFF
 
+SOL_CAN_RAW = 101
+CAN_RAW_RECV_OWN_MSGS = 4
+
+DIRECTION_TX = "TX"
+DIRECTION_RX = "RX"
+
+# BSLBATT BMS 升级协议关键 CAN ID（与 venus_firmware_update.py 保持一致）。
+BMS_UPGRADE_START_REQ_ID = 0x18A055AA
+BMS_UPGRADE_START_ACK_ID = 0x18A0AA55
+BMS_UPGRADE_DATA_FRAME_BASE_ID = 0x13000001
+BMS_UPGRADE_DATA_ACK_ID = 0x18A1AA55
+BMS_UPGRADE_FINISH_REQ_ID = 0x18A255AA
+BMS_UPGRADE_FINISH_ACK_ID = 0x18A2AA55
+BMS_UPGRADE_ERROR_ID = 0x18A3AA55
+
+# 数据帧 ID 规则：基址 0x13000001，每发一帧 +1，高 8 位固定 0x13。
+BMS_UPGRADE_DATA_FRAME_ID_MASK = 0xFF000000
+BMS_UPGRADE_DATA_FRAME_ID_PREFIX = 0x13000000
+
+BMS_UPGRADE_CONTROL_NAMES = {
+    BMS_UPGRADE_START_REQ_ID: "UPGRADE_START_REQ",
+    BMS_UPGRADE_START_ACK_ID: "UPGRADE_START_ACK",
+    BMS_UPGRADE_DATA_ACK_ID: "UPGRADE_DATA_ACK",
+    BMS_UPGRADE_FINISH_REQ_ID: "UPGRADE_FINISH_REQ",
+    BMS_UPGRADE_FINISH_ACK_ID: "UPGRADE_FINISH_ACK",
+    BMS_UPGRADE_ERROR_ID: "UPGRADE_ERROR",
+}
+
+
+def is_upgrade_data_frame(can_id):
+    """高 8 位 = 0x13 且不低于基址，视为升级数据帧。"""
+    return (
+        (can_id & BMS_UPGRADE_DATA_FRAME_ID_MASK) == BMS_UPGRADE_DATA_FRAME_ID_PREFIX
+        and can_id >= BMS_UPGRADE_DATA_FRAME_BASE_ID
+    )
+
+
+def upgrade_frame_tag(can_id):
+    """返回升级帧标签；非升级帧返回 None。
+
+    数据帧附带序号（基址即第 0 帧，往后 +1），便于在抓帧日志里直接定位。
+    """
+    if can_id in BMS_UPGRADE_CONTROL_NAMES:
+        return BMS_UPGRADE_CONTROL_NAMES[can_id]
+    if is_upgrade_data_frame(can_id):
+        frame_index = can_id - BMS_UPGRADE_DATA_FRAME_BASE_ID
+        return "UPGRADE_DATA#{}".format(frame_index)
+    return None
+
 
 def configure_output():
     if hasattr(sys.stdout, "reconfigure"):
@@ -61,6 +110,10 @@ class SocketCanMonitor:
             raise OSError("SocketCAN is required on Victron GX / Venus OS")
         self.sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
         self.sock.bind((self.interface_name,))
+        try:
+            self.sock.setsockopt(SOL_CAN_RAW, CAN_RAW_RECV_OWN_MSGS, 1)
+        except OSError:
+            pass
         self.sock.setblocking(False)
 
     def close(self):
@@ -95,11 +148,12 @@ class SocketCanMonitor:
                 continue
 
             try:
-                raw_frame = self.sock.recv(CAN_FRAME_SIZE)
+                raw_frame, _ancdata, msg_flags, _addr = self.sock.recvmsg(CAN_FRAME_SIZE, 0)
             except OSError as exc:
                 raise OSError("CAN receive failed: {}".format(exc))
 
             frame = unpack_can_frame(raw_frame)
+            frame["direction"] = DIRECTION_TX if msg_flags & socket.MSG_DONTROUTE else DIRECTION_RX
             if frame["is_error"] and not include_errors:
                 continue
 
@@ -115,16 +169,20 @@ def print_frame(interface_name, frame):
     if frame["is_error"]:
         flags.append("ERR")
     flag_text = ",".join(flags) if flags else "-"
+    upgrade_tag = upgrade_frame_tag(frame["can_id"])
+    tag_text = " tag={}".format(upgrade_tag) if upgrade_tag else ""
     print(
-        "{timestamp:.3f} {interface} {frame_type} id=0x{can_id:08X} "
-        "dlc={dlc} flags={flags} data={data}".format(
+        "{timestamp:.3f} {interface} {direction} {frame_type} id=0x{can_id:08X} "
+        "dlc={dlc} flags={flags} data={data}{tag}".format(
             timestamp=time.time(),
             interface=interface_name,
+            direction=frame.get("direction", DIRECTION_RX),
             frame_type=frame_type,
             can_id=frame["can_id"],
             dlc=len(frame["data"]),
             flags=flag_text,
             data=format_payload(frame["data"]),
+            tag=tag_text,
         ),
         flush=True,
     )

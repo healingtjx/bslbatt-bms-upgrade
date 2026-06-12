@@ -80,7 +80,7 @@ BMS_UPGRADE_ACK_BATCH_SIZE = 10
 BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS = 5.0
 BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS = 10.0
 BMS_UPGRADE_FINISH_ACK_TIMEOUT_SECONDS = 10.0
-BMS_UPGRADE_FRAME_INTERVAL_SECONDS = 0.002
+BMS_UPGRADE_FRAME_INTERVAL_SECONDS = 0.2
 
 
 class FirmwareError(Exception):
@@ -421,7 +421,18 @@ class BslbattFirmwareUpdater:
             # BMS 主动发错误帧时，映射成设备端内存/升级异常。
             if can_id == BMS_UPGRADE_ERROR_ID:
                 self.log_rx(can_id, payload)
-                raise MemoryErrorOnDevice("BMS reported upgrade error frame")
+                payload_str = payload_hex(payload) if payload else "(empty)"
+                raise MemoryErrorOnDevice(
+                    "BMS reported upgrade error frame: id=0x{:08X} len={} data=[{}] expected_ack=0x{:08X} sent_frames={}/{} next_offset={}".format(
+                        can_id,
+                        len(payload),
+                        payload_str,
+                        expected_can_id,
+                        self.sent_frame_count,
+                        self.frame_count,
+                        self.next_offset,
+                    )
+                )
 
             # 总线上可能有其他设备/其他协议的帧，这里只等待目标 ACK。
             if can_id != expected_can_id:
@@ -680,7 +691,8 @@ def update(args):
         return EXIT_TIMEOUT
     except MemoryErrorOnDevice as exc:
         xml_message("Device memory error")
-        debug(args.debug, str(exc))
+        # 设备返回的错误帧详情对排查非常关键，无论是否开启 --debug 都打到 stderr。
+        print("device error: {}".format(exc), file=sys.stderr, flush=True)
         return EXIT_MEMORY_ERROR
     except VerifyTimeoutError as exc:
         xml_message("Verification timeout")

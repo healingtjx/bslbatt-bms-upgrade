@@ -79,10 +79,10 @@ BMS_UPGRADE_FRAME_TOTAL_SIZE = 8
 BMS_UPGRADE_ACK_BATCH_SIZE = 10
 
 # 各阶段等待 BMS ACK 的超时时间。数据帧之间保留很短间隔，避免总线过载。
-BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS = 5.0
+BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS = 10.0
 BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS = 10.0
 BMS_UPGRADE_FINISH_ACK_TIMEOUT_SECONDS = 10.0
-BMS_UPGRADE_FRAME_INTERVAL_SECONDS = 0.2
+BMS_UPGRADE_FRAME_INTERVAL_SECONDS = 0.03
 
 
 class FirmwareError(Exception):
@@ -119,6 +119,7 @@ class MemoryErrorOnDevice(Exception):
 # 0x305/0x307 等 Victron CAN-BMS 帧干扰 BSLBATT BMS 升级。
 SERVICE_DIR = "/service"
 SERVICES_TO_STOP = ["can-bus-bms.can0"]
+STOP_SERVICE = True
 
 
 def configure_stdout():
@@ -768,14 +769,18 @@ def update(args):
         debug(args.debug, str(exc))
         return EXIT_FIRMWARE_ERROR
 
-    # 打开 CAN 之前先停掉占用 can0 的 Venus OS 服务，避免其他服务发的
-    # 0x305/0x307 帧干扰升级。停止失败也单独返回 CAN init 错误码。
-    try:
-        stopped_services = stop_can_services(args.debug)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        xml_message("CAN init failed")
-        debug(args.debug, "stop can services failed: {}".format(exc))
-        return EXIT_CAN_INIT_ERROR
+    stopped_services = []
+    if STOP_SERVICE:
+        # 打开 CAN 之前先停掉占用 can0 的 Venus OS 服务，避免其他服务发的
+        # 0x305/0x307 帧干扰升级。停止失败也单独返回 CAN init 错误码。
+        try:
+            stopped_services = stop_can_services(args.debug)
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            xml_message("CAN init failed")
+            debug(args.debug, "stop can services failed: {}".format(exc))
+            return EXIT_CAN_INIT_ERROR
+    else:
+        debug(args.debug, "skip stopping services because STOP_SERVICE is false")
 
     # 安装信号处理器，确保被 Ctrl+C / SIGTERM 打断时也能恢复服务。
     def _restore_on_signal(signum, _frame):

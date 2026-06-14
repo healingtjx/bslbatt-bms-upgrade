@@ -482,18 +482,7 @@ class BslbattFirmwareUpdater:
             # BMS 主动发错误帧时，映射成设备端内存/升级异常。
             if can_id == BMS_UPGRADE_ERROR_ID:
                 self.log_rx(can_id, payload)
-                payload_str = payload_hex(payload) if payload else "(empty)"
-                raise MemoryErrorOnDevice(
-                    "BMS reported upgrade error frame: id=0x{:08X} len={} data=[{}] expected_ack=0x{:08X} sent_frames={}/{} next_offset={}".format(
-                        can_id,
-                        len(payload),
-                        payload_str,
-                        expected_can_id,
-                        self.sent_frame_count,
-                        self.frame_count,
-                        self.next_offset,
-                    )
-                )
+                self.raise_upgrade_error(payload, expected_can_id)
 
             # 总线上可能有其他设备/其他协议的帧，这里只等待目标 ACK。
             if can_id != expected_can_id:
@@ -505,6 +494,60 @@ class BslbattFirmwareUpdater:
                 self.debug("Ignore invalid ACK length for 0x{:08X}: {}".format(can_id, len(payload)))
                 continue
             return payload
+
+    def raise_upgrade_error(self, payload, expected_can_id):
+        """把 BMS 错误帧统一映射成升级失败异常。"""
+        payload_str = payload_hex(payload) if payload else "(empty)"
+        raise MemoryErrorOnDevice(
+            "BMS reported upgrade error frame: id=0x{:08X} len={} data=[{}] expected_ack=0x{:08X} sent_frames={}/{} next_offset={}".format(
+                BMS_UPGRADE_ERROR_ID,
+                len(payload),
+                payload_str,
+                expected_can_id,
+                self.sent_frame_count,
+                self.frame_count,
+                self.next_offset,
+            )
+        )
+
+    def poll_upgrade_error(self, timeout):
+        """在帧间隔内轮询 BMS 错误帧；发现错误立即停止后续发送。"""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+
+            readable, _, _ = select.select([self.sock], [], [], remaining)
+            if not readable:
+                return
+
+            raw_frame = self.sock.recv(CAN_FRAME_SIZE, socket.MSG_PEEK)
+            frame = unpack_can_frame(raw_frame)
+
+            if frame["is_error"] or frame["is_remote"] or not frame["is_extended"]:
+                self.sock.recv(CAN_FRAME_SIZE)
+                self.log_can_frame("RX_POLL_DROP", frame)
+                continue
+
+            can_id = frame["can_id"]
+            if can_id == BMS_UPGRADE_ERROR_ID:
+                raw_frame = self.sock.recv(CAN_FRAME_SIZE)
+                frame = unpack_can_frame(raw_frame)
+                payload = frame["data"]
+                self.log_can_frame("RX", frame, BMS_UPGRADE_DATA_ACK_ID)
+                self.log_rx(can_id, payload)
+                self.raise_upgrade_error(payload, BMS_UPGRADE_DATA_ACK_ID)
+
+            # ACK 留给 receive_control_frame()/wait_data_ack() 做完整校验；
+            # 这里继续保持原来的帧间隔，避免 ACK 提前到达后下一帧过早发送。
+            if can_id in (BMS_UPGRADE_START_ACK_ID, BMS_UPGRADE_DATA_ACK_ID, BMS_UPGRADE_FINISH_ACK_ID):
+                if remaining > 0:
+                    time.sleep(remaining)
+                return
+
+            self.sock.recv(CAN_FRAME_SIZE)
+            self.log_can_frame("RX_POLL_DROP", frame)
 
     def log_rx(self, can_id, payload):
         """把收到的有效控制帧输出到调试日志。"""
@@ -588,7 +631,7 @@ class BslbattFirmwareUpdater:
                 xml_progress(min(89, progress))
                 self.log_transfer_progress("SEND")
                 if BMS_UPGRADE_FRAME_INTERVAL_SECONDS > 0:
-                    time.sleep(BMS_UPGRADE_FRAME_INTERVAL_SECONDS)
+                    self.poll_upgrade_error(BMS_UPGRADE_FRAME_INTERVAL_SECONDS)
 
             self.wait_data_ack(batch_target)
             self.log_transfer_progress("ACK")

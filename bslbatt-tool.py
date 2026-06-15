@@ -11,8 +11,8 @@ Venus OS XML contract only. Debug output goes to stderr.
     Venus OS 能识别的 XML；调试日志必须走 stderr，避免污染 XML。
 
 Example:
-    ./bslbatt-tool.py --list -c can0
-    ./bslbatt-tool.py --update -c can0 -n 0x2A -f /data/vrmfilescache/bms.bin
+    ./bslbatt-tool.py -c can0
+    ./bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/bms.bin
 """
 
 import argparse
@@ -44,9 +44,10 @@ EXIT_VERIFY_FAILED = 10
 EXIT_VERIFY_TIMEOUT = 11
 
 MANUFACTURER_TYPE = "bslbatt"
-PRODUCT_ID = os.environ.get("BSLBATT_VICTRON_PRODUCT_ID", "").strip()
+PRODUCT_ID = "TODO_PRODUCT_ID"
 DEVICE_DESCRIPTION = "BSLBATT BMS"
 DEFAULT_NODE_ID = 0
+DEFAULT_NODE_ID_TEXT = "0x{:X}".format(DEFAULT_NODE_ID)
 
 CAN_ID_LIMITS = 0x351
 CAN_ID_SOC = 0x355
@@ -135,6 +136,12 @@ class VerifyTimeoutError(Exception):
 
 class MemoryErrorOnDevice(Exception):
     """BMS 通过错误帧报告升级或存储异常。"""
+
+    pass
+
+
+class DeviceIdError(ValueError):
+    """VRM 回传的 connection-id / -n 与当前单设备工具不匹配。"""
 
     pass
 
@@ -345,9 +352,18 @@ def parse_node_id(value):
     try:
         node_id = int(str(value), 0)
     except (TypeError, ValueError):
-        raise ValueError("unsupported node id: {}".format(value))
+        raise DeviceIdError("unsupported node id: {}".format(value))
     if node_id < 0 or node_id > CAN_ID_MASK:
-        raise ValueError("node id must be between 0 and 0x{:X}".format(CAN_ID_MASK))
+        raise DeviceIdError("node id must be between 0 and 0x{:X}".format(CAN_ID_MASK))
+    return node_id
+
+
+def validate_node_id(node_id):
+    """BSLBATT 当前 CAN 升级协议固定为单设备，VRM 标识必须匹配列表输出。"""
+    if node_id != DEFAULT_NODE_ID:
+        raise DeviceIdError(
+            "unsupported node id: 0x{:X}; this tool only supports {}".format(node_id, DEFAULT_NODE_ID_TEXT)
+        )
     return node_id
 
 
@@ -357,7 +373,7 @@ def parse_connection(connection):
     if not match:
         raise ValueError("unsupported connection: {}".format(connection))
     can_interface = validate_can_interface(match.group(1))
-    node_id = parse_node_id(match.group(2))
+    node_id = validate_node_id(parse_node_id(match.group(2)))
     return can_interface, node_id
 
 
@@ -372,7 +388,7 @@ def resolve_update_target(args):
     if args.can or args.node_id is not None:
         if not args.can or args.node_id is None:
             raise ValueError("--update requires both -c/--can and -n/--node-id")
-        return validate_can_interface(args.can), parse_node_id(args.node_id)
+        return validate_can_interface(args.can), validate_node_id(parse_node_id(args.node_id))
 
     if args.connection:
         return parse_connection(args.connection)
@@ -524,15 +540,15 @@ def list_devices_on_interface(can_interface, args, found):
     key = "{}:{}".format(can_interface, device["node_id"])
     if key not in found:
         found.add(key)
-        print_device(device, can_interface, args.product_id, args.type)
+        print_device(device, can_interface, PRODUCT_ID, MANUFACTURER_TYPE)
 
     return EXIT_OK
 
 
 def list_devices(args):
     """执行 --list：扫描指定或全部 CAN 接口并输出设备 XML。"""
-    if not args.product_id:
-        debug(args.debug, "Victron product id is required; set BSLBATT_VICTRON_PRODUCT_ID or pass --product-id")
+    if not PRODUCT_ID:
+        debug(args.debug, "Victron product id is required; set PRODUCT_ID in bslbatt-tool.py")
         return EXIT_ARGUMENT_ERROR
 
     try:
@@ -1037,17 +1053,25 @@ class BslbattFirmwareUpdater:
 
 def update(args):
     """执行 --update：参数校验、固件读取、CAN 初始化、运行升级并映射退出码。"""
+    # Venus OS 上传后的固件路径应为绝对路径，避免脚本在不同工作目录下读错文件。
+    if not os.path.isabs(args.file):
+        xml_message("Firmware path error")
+        debug(args.debug, "firmware file path must be absolute: {}".format(args.file))
+        return EXIT_ARGUMENT_ERROR
+    if not os.path.isfile(args.file):
+        xml_message("Firmware path error")
+        debug(args.debug, "firmware file does not exist or is not a file: {}".format(args.file))
+        return EXIT_FILE_ERROR
+
     try:
         can_interface, node_id = resolve_update_target(args)
+    except DeviceIdError as exc:
+        xml_message("Device id error")
+        debug(args.debug, str(exc))
+        return EXIT_ARGUMENT_ERROR
     except ValueError as exc:
         xml_message("Invalid arguments")
         debug(args.debug, str(exc))
-        return EXIT_ARGUMENT_ERROR
-
-    # Venus OS 上传后的固件路径应为绝对路径，避免脚本在不同工作目录下读错文件。
-    if not os.path.isabs(args.file):
-        xml_message("Invalid arguments")
-        debug(args.debug, "firmware file path must be absolute: {}".format(args.file))
         return EXIT_ARGUMENT_ERROR
 
     try:
@@ -1119,9 +1143,9 @@ def update(args):
 
 
 def build_parser():
-    """定义合并工具命令行参数；Venus OS 调用时使用 --list 或 --update。"""
+    """定义合并工具命令行参数；兼容 Venus OS 文档示例和显式模式。"""
     parser = argparse.ArgumentParser(description="List and update BSLBATT devices for Venus OS")
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group()
     mode.add_argument("-l", "--list", action="store_true", help="list updatable devices")
     mode.add_argument("--update", action="store_true", help="update firmware")
 
@@ -1136,15 +1160,13 @@ def build_parser():
     parser.add_argument(
         "-n",
         "--node-id",
-        help="CAN connection-id returned from --list, for example 0x2A; required for --update with -c",
+        help="CAN connection-id returned from list output; BSLBATT single-device tools must use 0x0",
     )
     parser.add_argument("--timeout", type=float, default=3.0, help="passive discovery timeout in seconds for --list")
-    parser.add_argument("--product-id", default=PRODUCT_ID, help="Victron Product ID assigned by Victron")
-    parser.add_argument("--type", default=MANUFACTURER_TYPE, help="manufacturer type used by VRM")
 
     parser.add_argument(
         "--connection",
-        help="legacy socketcan connection string, for example socketcan:can0/0x2A; prefer -c/-n for VRM",
+        help="legacy socketcan connection string, for example socketcan:can0/0x0; prefer -c/-n for VRM",
     )
     parser.add_argument("-f", "--file", help="firmware file absolute path for --update")
     parser.add_argument("-d", "--debug", action="store_true", help="write debug logs to stderr")
@@ -1156,25 +1178,42 @@ def build_parser():
     return parser
 
 
+def infer_mode(args):
+    """
+    Infer the Venus OS remote-toolbox operation when no explicit mode is used.
+
+    The Victron document examples call CAN list tools as `tool -c can1` and
+    update tools as `tool -c can1 -f file -n id`, so `-f` is the update signal.
+    """
+    if args.list:
+        return "list"
+    if args.update:
+        return "update"
+    if args.file:
+        return "update"
+    return "list"
+
+
 def main():
     """脚本入口：配置输出缓冲、解析参数，然后执行列表或升级。"""
     configure_stdout()
     args = build_parser().parse_args()
+    mode = infer_mode(args)
 
-    if args.list:
+    if mode == "list":
         if args.timeout <= 0:
             debug(args.debug, "timeout must be greater than zero")
             return EXIT_ARGUMENT_ERROR
         return list_devices(args)
 
-    if args.update:
+    if mode == "update":
         if not args.file:
             xml_message("Invalid arguments")
             debug(args.debug, "--update requires --file")
             return EXIT_ARGUMENT_ERROR
         return update(args)
 
-    # argparse 的 mutually_exclusive_group(required=True) 正常会拦截到这里之前。
+    # infer_mode() should always resolve to list or update.
     return EXIT_ARGUMENT_ERROR
 
 

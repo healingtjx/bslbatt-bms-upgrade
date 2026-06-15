@@ -4,4 +4,4 @@
 __pycache__/
 *.py[cod]
 demo/
-oldcode/
+doc/oldcode/

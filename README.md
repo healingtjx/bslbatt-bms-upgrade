@@ -1,152 +1,144 @@
-# BSLBATT Venus OS Tools
+# BSLBATT Venus OS Tool
 
-This repository contains two Python command-line tools for Victron GX / Venus OS remote firmware update integration:
+`bslbatt-tool.py` is a combined Victron GX / Venus OS remote firmware update
+tool for BSLBATT BMS devices. It supports both Venus OS operations:
 
-- `venus_device_list.py`: lists updatable BSLBATT devices on a selected SocketCAN interface.
-- `venus_firmware_update.py`: updates one BSLBATT device with a firmware file uploaded through VRM.
+- listing updatable devices on SocketCAN buses;
+- updating one selected device with firmware uploaded through VRM.
 
-Both tools are designed for Venus OS. Stdout is reserved for XML consumed by Venus OS / VRM, and debug logs are written to stderr only when `-d` is enabled.
+The tool is designed for the Venus OS remote-toolbox contract. Stdout is
+reserved for Venus OS XML only. Debug logs and device error details are written
+to stderr.
 
 ## Requirements
 
 - Python 3 on Victron GX / Venus OS.
 - Linux SocketCAN support.
 - A configured CAN interface such as `can0` or `vecan0`.
-- The selected GX CAN port must already be configured with the BSLBATT-required CAN bitrate, for example `250 kbit/s`.
+- The selected GX CAN port must already use the BSLBATT-required CAN bitrate,
+  for example `250 kbit/s`.
 
-The scripts do not change CAN bitrate or bring CAN interfaces up/down.
+The script does not change CAN bitrate and does not bring CAN interfaces
+up/down.
 
-## Device List Tool
+## Usage
 
 Show help:
 
 ```bash
-python3 venus_device_list.py --help
+python3 bslbatt-tool.py --help
 ```
 
-Scan all available GX CAN interfaces matching `can*` or `vecan*`:
+List devices on all available `can*` and `vecan*` interfaces:
 
 ```bash
-python3 venus_device_list.py --list
+python3 bslbatt-tool.py
 ```
 
-The short form is also supported:
+List devices on `can0`:
 
 ```bash
-python3 venus_device_list.py -l
+python3 bslbatt-tool.py -c can0
 ```
 
-List devices only on `can0`:
+The explicit list flag is also supported:
 
 ```bash
-python3 venus_device_list.py --list -c can0
+python3 bslbatt-tool.py --list -c can0
 ```
 
-List devices on `vecan0`:
+Update the selected device using the Venus OS style arguments:
 
 ```bash
-python3 venus_device_list.py --list -c vecan0
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
+```
+
+The explicit update flag is optional when `-f` is present, but can be used:
+
+```bash
+python3 bslbatt-tool.py --update -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
 ```
 
 Enable debug logs:
 
 ```bash
-python3 venus_device_list.py --list -c can0 -d
+python3 bslbatt-tool.py -c can0 -d
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin -d
 ```
 
-Override the Victron Product ID and manufacturer type:
+## Options
 
-```bash
-python3 venus_device_list.py --list -c can0 --product-id 49188 --type bslbatt
-```
+| Option | Mode | Required | Description |
+|--------|------|----------|-------------|
+| `-l`, `--list` | List | No | Forces device listing mode. If neither `--list` nor `--update` is provided, listing is inferred unless `-f` is present. |
+| `--update` | Update | No | Forces firmware update mode. Update mode is also inferred when `-f` is provided. |
+| `-c`, `--can` | Both | List: no, update: yes | SocketCAN interface, for example `can0` or `vecan0`. In list mode, omitted means scan all available `can*`/`vecan*` interfaces. |
+| `-n`, `--node-id` | Update | Yes | CAN `connection-id` returned from list XML. The current BSLBATT single-device protocol only accepts `0x0`. |
+| `--timeout` | List | No | Passive discovery timeout in seconds. Default: `3.0`. |
+| `--connection` | Update | No | Legacy connection string, for example `socketcan:can0/0x0`. Prefer `-c/-n` for Venus OS / VRM. |
+| `-f`, `--file` | Update | Yes | Absolute path of the firmware file uploaded to GX / VRM cache. Raw firmware files and zip packages are accepted. |
+| `-d`, `--debug` | Both | No | Writes debug logs to stderr. |
+| `--can-log` | Update | No | Parsed CAN RX/update log file. Default: `venus_firmware_update_can.log`. Use an empty value to disable. |
 
-Options:
+## Device Discovery
 
-| Option | Required | Description |
-|--------|----------|-------------|
-| `-l`, `--list` | Yes | Runs device listing mode. |
-| `-c`, `--can` | No | SocketCAN interface, for example `can0` or `vecan0`. If omitted, the tool scans all available `can*`/`vecan*` interfaces. |
-| `--timeout` | No | Passive scan time in seconds. Default: `3.0`. |
-| `--product-id` | No | Victron Product ID. Default is currently `TODO_PRODUCT_ID`. |
-| `--type` | No | Manufacturer type used by VRM. Default: `bslbatt`. |
-| `-d`, `--debug` | No | Writes debug logs to stderr. |
+Discovery passively listens for Victron BMS-CAN LV frames on the selected CAN
+bus. The script treats a bus as a BSLBATT candidate when it sees the BSLBATT
+identity text, the BSLBATT device marker frame, or enough core BMS-CAN frames
+without a conflicting identity.
 
-Expected XML output for each discovered device:
+The list output for each discovered device is a single XML element:
 
 ```xml
-<device serial="ABC123" version="1.0.0" description="BSLBATT BMS" id="49188" type="bslbatt" connection="socketcan:can0/0x2A" updatable="True" />
+<device serial="ABC123" version="v1.23" description="BSLBATT BMS" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
-The `connection` value is generated as `socketcan:<interface>/<node_id>` and is passed back to the firmware update tool through `-s`.
+Important fields:
 
-No device found is not an error. In that case the list tool prints no XML and exits with code `0`.
+- `connection-type="can"` tells Venus OS this is a CAN-connected device.
+- `connection-id="0x0"` is passed back to update mode as `-n`.
+- `connection="socketcan:can0/0x0"` is kept for compatibility with older local
+  scripts and can be passed through `--connection`.
 
-With `-d`, received CAN frames are written to stderr for protocol debugging. They are never written to stdout.
+No device found is not an error. In that case the tool prints no XML and exits
+with code `0`.
 
-Current status: `decode_bslbatt_device()` is still a placeholder. It must be replaced with the actual BSLBATT CAN identification/version parsing before final delivery.
+Current device metadata parsing:
 
-## Firmware Update Tool
-
-Show help:
-
-```bash
-python3 venus_firmware_update.py --help
-```
-
-Update a device:
-
-```bash
-python3 venus_firmware_update.py --update -s socketcan:can0/0x2A -f /data/vrmfilescache/firmware.bin
-```
-
-Update with debug logs:
-
-```bash
-python3 venus_firmware_update.py --update -s socketcan:can0/0x2A -f /data/vrmfilescache/firmware.bin -d
-```
-
-Options:
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `--update` | Yes | Runs firmware update mode. |
-| `-s`, `--connection` | Yes | Connection from list XML, for example `socketcan:can0/0x2A`. |
-| `-f`, `--file` | Yes | Absolute path of the firmware file uploaded to GX / VRM cache. Raw firmware files and zip packages are accepted. |
-| `-d`, `--debug` | No | Writes debug logs and CAN TX/RX traces to stderr. |
-
-The connection format must be:
-
-```text
-socketcan:<can-interface>/<node-id>
-```
-
-Example:
-
-```text
-socketcan:can0/0x2A
-```
+- firmware version is decoded from CAN ID `0x35F` bytes 2 and 3 as `vX.Y`;
+- serial number is built from CAN IDs `0x380` and `0x381` when available;
+- description is built from device name, manufacturer/family, or model fields
+  when available;
+- the default product id is still `TODO_PRODUCT_ID` in `bslbatt-tool.py` and
+  must be replaced with the Victron-assigned Product ID before final delivery.
 
 ## Firmware Update Flow
 
-`venus_firmware_update.py` currently implements the BSLBATT CAN upgrade transfer flow:
+Update mode validates all local inputs before opening CAN. Firmware paths must
+be absolute. If the file is a zip package, the tool runs the zip CRC check and
+requires exactly one `.bin`, `.fw`, or `.img` payload inside the package.
 
-1. Validate the `socketcan:<interface>/<node-id>` connection string.
-2. Read the firmware file from an absolute path and validate that it exists and is non-empty.
-3. If the uploaded file is a zip package, run the zip CRC check and extract exactly one `.bin`, `.fw`, or `.img` firmware payload.
-4. Check that the resulting firmware fits the BSLBATT CAN transfer size and frame-count fields.
-5. Calculate firmware size and CRC32 for debug logging.
-6. Open the SocketCAN interface from `-s`.
-7. Send start request `0x18A055AA` with transfer size and frame count.
-8. Wait for start ACK `0x18A0AA55`.
-9. Send firmware data frames starting at extended CAN ID `0x13000001`.
-10. Each data frame carries 7 bytes of firmware data plus a 1-byte checksum.
-11. Wait for data ACK `0x18A1AA55` every 64 frames.
-12. Send finish request `0x18A255AA`.
-13. Wait for finish ACK `0x18A2AA55`.
+The implemented BSLBATT CAN upgrade flow is:
 
-The updater treats BMS error frame `0x18A3AA55` as a device memory error.
+1. Resolve target CAN bus and node id from `-c/-n`, or from legacy
+   `--connection`.
+2. Read and validate the firmware file.
+3. Calculate transfer size, frame count, and CRC32 for logging.
+4. Open the SocketCAN interface.
+5. Drain old control frames from the socket.
+6. Send start request `0x18A055AA` with transfer size and frame count.
+7. Wait for start ACK `0x18A0AA55`.
+8. Send firmware data frames starting at extended CAN ID `0x13000001`.
+9. Each data frame carries 7 bytes of firmware data plus a 1-byte checksum.
+10. Wait for data ACK `0x18A1AA55` after every 10 data frames.
+11. Send finish request `0x18A255AA`.
+12. Wait for finish ACK `0x18A2AA55`.
 
-Progress XML is emitted during the update:
+The updater treats BMS error frame `0x18A3AA55` as a device memory/update
+error. Error frame details are always written to stderr because they are needed
+for diagnosis.
+
+Progress XML emitted during update:
 
 ```xml
 <message type="normal">Checking firmware</message>
@@ -166,7 +158,11 @@ Progress XML is emitted during the update:
 <message type="normal">Update successful</message>
 ```
 
-Current status: file integrity checks cover readable raw files, empty files, zip package CRC, and transfer-size limits. Product compatibility checks still require the real BSLBATT package format, such as magic header, target model, target version, payload length, CRC, or signature.
+Current status: `locate_device()`, `erase_flash()`, and `verify_firmware()` are
+protocol placeholders. The actual transfer is implemented, but product
+compatibility checks still need the final BSLBATT firmware package format, such
+as magic header, target model, target version, payload length, CRC, or
+signature.
 
 ## Check Available CAN Gateway
 
@@ -176,10 +172,11 @@ On GX, `vup` can show which SocketCAN gateway is available:
 vup --canbus socketcan:can0
 ```
 
-If `socketcan:vecan0` is not found and GX reports only `socketcan:can0`, use `can0`:
+If `socketcan:vecan0` is not found and GX reports only `socketcan:can0`, use
+`can0`:
 
 ```bash
-python3 venus_device_list.py --list -c can0
+python3 bslbatt-tool.py -c can0
 ```
 
 ## Exit Codes
@@ -194,17 +191,21 @@ python3 venus_device_list.py --list -c can0
 | 5 | Firmware error or incompatible firmware |
 | 6 | Argument error |
 | 7 | Device not found |
-| 8 | Device memory error |
+| 8 | Device memory/update error reported by BMS |
 | 9 | Firmware file error |
 | 10 | Verification failed |
 | 11 | Verification timeout |
 
-The list tool uses codes `0`, `1`, `2`, `3`, and `6`. The firmware update tool may use all codes listed above.
+List mode uses codes `0`, `1`, `2`, `3`, and `6`. Update mode may use all codes
+listed above.
 
 ## Final Delivery Checklist
 
-- Replace `TODO_PRODUCT_ID` in `venus_device_list.py` with the Victron-assigned Product ID.
-- Implement `decode_bslbatt_device()` in `venus_device_list.py`.
-- Add real BSLBATT model/version compatibility validation once the firmware package format is confirmed.
-- Confirm whether `locate_device()`, `erase_flash()`, and `verify_firmware()` should remain no-op steps for the final BSLBATT protocol.
-- Run the tools on a GX / Venus OS device with the target BMS and verify XML-only stdout.
+- Replace `TODO_PRODUCT_ID` in `bslbatt-tool.py` with the Victron-assigned
+  Product ID.
+- Confirm the final BSLBATT firmware package format and add real model/version
+  compatibility validation.
+- Confirm whether `locate_device()`, `erase_flash()`, and `verify_firmware()`
+  should remain no-op steps for the final BSLBATT protocol.
+- Run the tool on a GX / Venus OS device with the target BMS and verify
+  XML-only stdout.

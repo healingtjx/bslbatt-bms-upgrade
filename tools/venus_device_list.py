@@ -34,12 +34,15 @@ DEFAULT_NODE_ID = 0
 CAN_ID_LIMITS = 0x351
 CAN_ID_SOC = 0x355
 CAN_ID_MEASUREMENTS = 0x356
+CAN_ID_STATUS_OBSERVED = 0x359
 CAN_ID_ALARMS = 0x35A
+CAN_ID_FLAGS_OBSERVED = 0x35C
 CAN_ID_MANUFACTURER = 0x35E
 CAN_ID_BATTERY_INFO = 0x35F
 CAN_ID_NAME_PART_1 = 0x370
 CAN_ID_NAME_PART_2 = 0x371
 CAN_ID_DEVICE_MARKER = 0x375
+CAN_ID_CAPACITY_OBSERVED = 0x379
 CAN_ID_SERIAL_PART_1 = 0x380
 CAN_ID_SERIAL_PART_2 = 0x381
 CAN_ID_FAMILY = 0x382
@@ -50,6 +53,9 @@ CAN_EFF_FLAG = 0x80000000
 CAN_RTR_FLAG = 0x40000000
 CAN_ERR_FLAG = 0x20000000
 CAN_ID_MASK = 0x1FFFFFFF
+
+BMS_CAN_CORE_IDS = (CAN_ID_LIMITS, CAN_ID_SOC, CAN_ID_MEASUREMENTS, CAN_ID_ALARMS)
+BMS_CAN_OBSERVED_IDS = (CAN_ID_STATUS_OBSERVED, CAN_ID_FLAGS_OBSERVED, CAN_ID_CAPACITY_OBSERVED)
 
 
 def configure_stdout():
@@ -136,6 +142,7 @@ class BmsCanLvDeviceState:
         self.seen_battery_marker = False
         self.seen_device_marker = False
         self.seen_core_frame = False
+        self.observed_frame_ids = set()
         self.seen_identity_frame = False
         self.seen_bslbatt_identity = False
         self.manufacturer = ""
@@ -157,8 +164,10 @@ class BmsCanLvDeviceState:
         if can_id == CAN_ID_DEVICE_MARKER:
             self.seen_device_marker = True
 
-        if can_id in (CAN_ID_LIMITS, CAN_ID_SOC, CAN_ID_MEASUREMENTS, CAN_ID_ALARMS):
+        if can_id in BMS_CAN_CORE_IDS:
             self.seen_core_frame = True
+        if can_id in BMS_CAN_OBSERVED_IDS:
+            self.observed_frame_ids.add(can_id)
         if can_id == CAN_ID_ALARMS:
             self.seen_battery_marker = True
         elif can_id == CAN_ID_MANUFACTURER:
@@ -192,10 +201,10 @@ class BmsCanLvDeviceState:
     def is_bslbatt_candidate(self):
         if self.seen_device_marker:
             return True
-        if not self.seen_battery_marker:
-            return False
         if self.seen_bslbatt_identity:
             return True
+        if not self.seen_core_frame and len(self.observed_frame_ids) < 2:
+            return False
         return not self.seen_identity_frame
 
     def to_device(self):
@@ -319,7 +328,20 @@ def list_devices_on_interface(can_interface, args, found):
 
     device = device_state.to_device()
     if device is None:
-        debug(args.debug, "No BSLBATT BMS-CAN LV device found on {}".format(can_interface))
+        debug(
+            args.debug,
+            "No BSLBATT BMS-CAN LV device found on {} "
+            "(core_frame={} observed_frames={} battery_marker={} device_marker={} "
+            "identity_frame={} bslbatt_identity={})".format(
+                can_interface,
+                int(device_state.seen_core_frame),
+                ",".join("0x{:03X}".format(can_id) for can_id in sorted(device_state.observed_frame_ids)) or "-",
+                int(device_state.seen_battery_marker),
+                int(device_state.seen_device_marker),
+                int(device_state.seen_identity_frame),
+                int(device_state.seen_bslbatt_identity),
+            ),
+        )
         return EXIT_OK
 
     key = "{}:{}".format(can_interface, device["node_id"])

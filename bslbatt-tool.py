@@ -12,7 +12,7 @@ Venus OS XML contract only. Debug output goes to stderr.
 
 Example:
     ./bslbatt-tool.py --list -c can0
-    ./bslbatt-tool.py --update -s socketcan:can0/0x2A -f /data/vrmfilescache/bms.bin
+    ./bslbatt-tool.py --update -c can0 -n 0x2A -f /data/vrmfilescache/bms.bin
 """
 
 import argparse
@@ -44,7 +44,7 @@ EXIT_VERIFY_FAILED = 10
 EXIT_VERIFY_TIMEOUT = 11
 
 MANUFACTURER_TYPE = "bslbatt"
-PRODUCT_ID = "TODO_PRODUCT_ID"
+PRODUCT_ID = os.environ.get("BSLBATT_VICTRON_PRODUCT_ID", "").strip()
 DEVICE_DESCRIPTION = "BSLBATT BMS"
 DEFAULT_NODE_ID = 0
 
@@ -333,18 +333,51 @@ class BmsCanLvDeviceState:
         return "-".join(parts)
 
 
+def validate_can_interface(can_interface):
+    """校验 Venus OS 传入或扫描出的 CAN 接口名。"""
+    if not re.match(r"^(can|vecan)[0-9]+$", can_interface):
+        raise ValueError("unsupported CAN interface: {}".format(can_interface))
+    return can_interface
+
+
+def parse_node_id(value):
+    """解析 VRM 回传的 CAN connection-id / -n 参数。"""
+    try:
+        node_id = int(str(value), 0)
+    except (TypeError, ValueError):
+        raise ValueError("unsupported node id: {}".format(value))
+    if node_id < 0 or node_id > CAN_ID_MASK:
+        raise ValueError("node id must be between 0 and 0x{:X}".format(CAN_ID_MASK))
+    return node_id
+
+
 def parse_connection(connection):
-    """解析 Venus OS 传入的连接字符串，例如 socketcan:can0/0x2A。"""
+    """解析旧版连接字符串，例如 socketcan:can0/0x2A；新 VRM 调用优先使用 -c/-n。"""
     match = re.match(r"^socketcan:([^/]+)/(.+)$", connection)
     if not match:
         raise ValueError("unsupported connection: {}".format(connection))
-    can_interface = match.group(1)
-    if not re.match(r"^(can|vecan)[0-9]+$", can_interface):
-        raise ValueError("unsupported CAN interface: {}".format(can_interface))
-    node_id = int(match.group(2), 0)
-    if node_id < 0 or node_id > CAN_ID_MASK:
-        raise ValueError("node id must be between 0 and 0x{:X}".format(CAN_ID_MASK))
+    can_interface = validate_can_interface(match.group(1))
+    node_id = parse_node_id(match.group(2))
     return can_interface, node_id
+
+
+def resolve_update_target(args):
+    """
+    Resolve the target selected by VRM.
+
+    The VRM remote-toolbox contract sends the selected CAN bus as -c and the
+    device identity returned in XML as -n/connection-id. The legacy
+    socketcan:canX/id string remains accepted for existing local scripts.
+    """
+    if args.can or args.node_id is not None:
+        if not args.can or args.node_id is None:
+            raise ValueError("--update requires both -c/--can and -n/--node-id")
+        return validate_can_interface(args.can), parse_node_id(args.node_id)
+
+    if args.connection:
+        return parse_connection(args.connection)
+
+    raise ValueError("--update requires -c/--can and -n/--node-id")
 
 
 def open_can(interface_name):
@@ -403,16 +436,19 @@ def list_available_can_interfaces():
 def print_device(device, can_interface, product_id, manufacturer_type):
     """按 Venus OS 设备列表 XML 格式输出单个设备。"""
     node_id = int(device["node_id"])
+    connection_id = "0x{:X}".format(node_id)
     connection = "socketcan:{}/0x{:X}".format(can_interface, node_id)
     print(
         '<device serial="{serial}" version="{version}" description="{description}" '
-        'id="{product_id}" type="{manufacturer_type}" connection="{connection}" '
+        'id="{product_id}" type="{manufacturer_type}" '
+        'connection-type="can" connection-id="{connection_id}" connection="{connection}" '
         'updatable="True" />'.format(
             serial=xml_attr(device["serial"]),
             version=xml_attr(device["version"]),
             description=xml_attr(device.get("description", DEVICE_DESCRIPTION)),
             product_id=xml_attr(product_id),
             manufacturer_type=xml_attr(manufacturer_type),
+            connection_id=xml_attr(connection_id),
             connection=xml_attr(connection),
         ),
         flush=True,
@@ -495,7 +531,15 @@ def list_devices_on_interface(can_interface, args, found):
 
 def list_devices(args):
     """执行 --list：扫描指定或全部 CAN 接口并输出设备 XML。"""
-    interfaces = [args.can] if args.can else list_available_can_interfaces()
+    if not args.product_id:
+        debug(args.debug, "Victron product id is required; set BSLBATT_VICTRON_PRODUCT_ID or pass --product-id")
+        return EXIT_ARGUMENT_ERROR
+
+    try:
+        interfaces = [validate_can_interface(args.can)] if args.can else list_available_can_interfaces()
+    except ValueError as exc:
+        debug(args.debug, str(exc))
+        return EXIT_ARGUMENT_ERROR
     found = set()
 
     if not interfaces:
@@ -994,8 +1038,7 @@ class BslbattFirmwareUpdater:
 def update(args):
     """执行 --update：参数校验、固件读取、CAN 初始化、运行升级并映射退出码。"""
     try:
-        # -s/--connection 来自 Venus OS 列表 XML，格式必须是 socketcan:接口/节点ID。
-        can_interface, node_id = parse_connection(args.connection)
+        can_interface, node_id = resolve_update_target(args)
     except ValueError as exc:
         xml_message("Invalid arguments")
         debug(args.debug, str(exc))
@@ -1085,13 +1128,24 @@ def build_parser():
     parser.add_argument(
         "-c",
         "--can",
-        help="CAN interface for --list, for example can0 or vecan0; omitted means scan all can*/vecan* interfaces",
+        help=(
+            "CAN interface. For --list this selects which bus to scan; omitted means scan all can*/vecan*. "
+            "For --update this is the bus selected by Venus OS, for example can0 or vecan0"
+        ),
+    )
+    parser.add_argument(
+        "-n",
+        "--node-id",
+        help="CAN connection-id returned from --list, for example 0x2A; required for --update with -c",
     )
     parser.add_argument("--timeout", type=float, default=3.0, help="passive discovery timeout in seconds for --list")
     parser.add_argument("--product-id", default=PRODUCT_ID, help="Victron Product ID assigned by Victron")
     parser.add_argument("--type", default=MANUFACTURER_TYPE, help="manufacturer type used by VRM")
 
-    parser.add_argument("-s", "--connection", help="connection from list XML, for example socketcan:can0/0x2A")
+    parser.add_argument(
+        "--connection",
+        help="legacy socketcan connection string, for example socketcan:can0/0x2A; prefer -c/-n for VRM",
+    )
     parser.add_argument("-f", "--file", help="firmware file absolute path for --update")
     parser.add_argument("-d", "--debug", action="store_true", help="write debug logs to stderr")
     parser.add_argument(
@@ -1114,9 +1168,9 @@ def main():
         return list_devices(args)
 
     if args.update:
-        if not args.connection or not args.file:
+        if not args.file:
             xml_message("Invalid arguments")
-            debug(args.debug, "--update requires --connection and --file")
+            debug(args.debug, "--update requires --file")
             return EXIT_ARGUMENT_ERROR
         return update(args)
 

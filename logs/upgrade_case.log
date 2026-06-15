@@ -12,8 +12,6 @@ root@ccgx:~# ip -details link show type can
 
 root@ccgx:/opt/bs# python bslbatt-tool.py  -c can0
 <device serial="model770-can0" version="v1.23" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
-root@ccgx:/opt/bs# python bslbatt-tool.py  -c can0
-<device serial="model770-can0" version="v1.23" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 root@ccgx:/opt/bs# python bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/124.bin
 <message type="normal">Checking firmware</message>
 <progress level="0" />

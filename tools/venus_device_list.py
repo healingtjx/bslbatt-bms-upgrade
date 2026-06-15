@@ -104,6 +104,13 @@ def read_le16(data, offset):
     return data[offset] | (data[offset + 1] << 8)
 
 
+def decode_battery_info_version(payload):
+    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 01 17 => v1.23。"""
+    if len(payload) < 4:
+        return ""
+    return "v{}.{}".format(payload[2], payload[3])
+
+
 def decode_victron_ascii(payload):
     """
     Decode Victron BMS-CAN 7-bit ASCII fields.
@@ -176,8 +183,7 @@ class BmsCanLvDeviceState:
         elif can_id == CAN_ID_BATTERY_INFO:
             self.model = read_le16(payload, 0)
             self.online_capacity_ah = read_le16(payload, 4)
-            if len(payload) >= 4:
-                self.firmware_version = "{}.{}".format(payload[2], payload[3])
+            self.firmware_version = decode_battery_info_version(payload)
         elif can_id == CAN_ID_NAME_PART_1:
             self.name_part_1 = decode_victron_ascii(payload)
             self._record_identity_text(self.name_part_1)

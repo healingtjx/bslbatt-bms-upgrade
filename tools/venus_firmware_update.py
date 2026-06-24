@@ -857,7 +857,7 @@ def update(args):
 def build_parser():
     """定义命令行参数；Venus OS 调用时必须带 --update、-s 和 -f。"""
     parser = argparse.ArgumentParser(description="Update BSLBATT firmware for Venus OS")
-    parser.add_argument("--update", action="store_true", help="update firmware")
+    parser.add_argument("-u", "--update", action="store_true", help="update firmware")
     parser.add_argument("-s", "--connection", required=True, help="connection from list XML, for example socketcan:can0/0x2A")
     parser.add_argument("-f", "--file", required=True, help="firmware file absolute path")
     parser.add_argument("-d", "--debug", action="store_true", help="write debug logs to stderr")

@@ -57,7 +57,7 @@ python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
 The explicit update flag is optional when `-f` is present, but can be used:
 
 ```bash
-python3 bslbatt-tool.py --update -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
+python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
 ```
 
 Enable debug logs:
@@ -75,7 +75,7 @@ called with `python`.
 | Option | Mode | Required | Description |
 |--------|------|----------|-------------|
 | `-l`, `--list` | List | No | Forces device listing mode. If neither `--list` nor `--update` is provided, listing is inferred unless `-f` is present. |
-| `--update` | Update | No | Forces firmware update mode. Update mode is also inferred when `-f` is provided. |
+| `-u`, `--update` | Update | No | Forces firmware update mode. Update mode is also inferred when `-f` is provided. |
 | `-c`, `--can` | Both | List: no, update: yes | SocketCAN interface, for example `can0` or `vecan0`. In list mode, omitted means scan all available `can*`/`vecan*` interfaces. |
 | `-n`, `--node-id` | Update | Yes | CAN `connection-id` returned from list XML. The current BSLBATT single-device protocol only accepts `0x0`. |
 | `--timeout` | List | No | Passive discovery timeout in seconds. Default: `3.0`. |

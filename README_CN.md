@@ -54,7 +54,7 @@ python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
 传入 `-f` 时会自动推断为升级模式，也可以显式加 `--update`：
 
 ```bash
-python3 bslbatt-tool.py --update -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
+python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
 ```
 
 开启调试日志：
@@ -72,7 +72,7 @@ python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin -d
 | 参数 | 模式 | 是否必填 | 说明 |
 |------|------|----------|------|
 | `-l`, `--list` | 列表 | 否 | 强制执行设备列表模式。不传 `--list`/`--update` 时，除非提供 `-f`，否则默认推断为列表模式。 |
-| `--update` | 升级 | 否 | 强制执行固件升级模式。提供 `-f` 时也会自动推断为升级模式。 |
+| `-u`, `--update` | 升级 | 否 | 强制执行固件升级模式。提供 `-f` 时也会自动推断为升级模式。 |
 | `-c`, `--can` | 两者 | 列表否，升级是 | SocketCAN 接口，例如 `can0` 或 `vecan0`。列表模式不传时扫描所有可用的 `can*`/`vecan*` 接口。 |
 | `-n`, `--node-id` | 升级 | 是 | 设备列表 XML 返回的 CAN `connection-id`。当前 BSLBATT 单设备协议只接受 `0x0`。 |
 | `--timeout` | 列表 | 否 | 被动扫描时长，单位秒。默认：`3.0`。 |

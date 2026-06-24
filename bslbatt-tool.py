@@ -1261,7 +1261,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="List and update BSLBATT devices for Venus OS")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("-l", "--list", action="store_true", help="list updatable devices")
-    mode.add_argument("--update", action="store_true", help="update firmware")
+    mode.add_argument("-u", "--update", action="store_true", help="update firmware")
 
     parser.add_argument(
         "-c",

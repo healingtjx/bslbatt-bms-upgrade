@@ -16,7 +16,8 @@ to stderr.
 - Linux SocketCAN support.
 - A configured CAN interface such as `can0` or `vecan0`.
 - The selected GX CAN port must already use the BSLBATT-required CAN bitrate,
-  for example `250 kbit/s`.
+  for example `500 kbit/s` in the verified case below, or whatever bitrate is
+  required by the target battery.
 
 The script does not change CAN bitrate and does not bring CAN interfaces
 up/down.
@@ -66,6 +67,9 @@ python3 bslbatt-tool.py -c can0 -d
 python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin -d
 ```
 
+On Venus OS images where `python` points to Python 3, the same commands can be
+called with `python`.
+
 ## Options
 
 | Option | Mode | Required | Description |
@@ -109,6 +113,9 @@ Current device metadata parsing:
 - serial number is built from CAN IDs `0x380` and `0x381` when available;
 - description is built from device name, manufacturer/family, or model fields
   when available;
+- when version, serial, or model frames are not available, the tool still
+  reports a BSLBATT candidate with fallback values such as
+  `version="unknown"` and `serial="BSLBATT-can0"`;
 - the default product id is still `TODO_PRODUCT_ID` in `bslbatt-tool.py` and
   must be replaced with the Victron-assigned Product ID before final delivery.
 
@@ -138,7 +145,7 @@ The updater treats BMS error frame `0x18A3AA55` as a device memory/update
 error. Error frame details are always written to stderr because they are needed
 for diagnosis.
 
-Progress XML emitted during update:
+Progress XML emitted during update, abridged:
 
 ```xml
 <message type="normal">Checking firmware</message>
@@ -150,6 +157,8 @@ Progress XML emitted during update:
 <message type="normal">Erasing device</message>
 <progress level="20" />
 <message type="normal">Writing firmware</message>
+<progress level="21" />
+...
 <progress level="90" />
 <message type="normal">Verifying firmware</message>
 <progress level="98" />
@@ -163,6 +172,69 @@ protocol placeholders. The actual transfer is implemented, but product
 compatibility checks still need the final BSLBATT firmware package format, such
 as magic header, target model, target version, payload length, CRC, or
 signature.
+
+## Verified GX Case
+
+The project includes the GX terminal record in `logs/upgrade_case.log`. The
+successful case was run on a CCGX where `can0` was already up:
+
+```text
+3: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 100
+    can state ERROR-ACTIVE (berr-counter tx 0 rx 0) restart-ms 100
+          bitrate 500000 sample-point 0.846
+```
+
+Before the update, list mode found one BSLBATT device on `can0`:
+
+```bash
+python bslbatt-tool.py -c can0
+```
+
+```xml
+<device serial="model770-can0" version="v1.23" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+```
+
+The update command used the XML `connection-id` value as `-n` and the VRM cache
+file as `-f`:
+
+```bash
+python bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/124.bin
+```
+
+The update printed Venus XML progress from firmware checking through
+`Update successful`. During writing it emitted incremental progress levels
+`21` through `90`.
+
+After the update, list mode reported the same device at firmware `v1.24`:
+
+```xml
+<device serial="model770-can0" version="v1.24" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+```
+
+Additional observed outputs:
+
+If metadata frames are incomplete, list mode can still report a detected
+BSLBATT candidate:
+
+```xml
+<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+```
+
+```bash
+python /opt/bs/bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/1123123.bin
+```
+
+```xml
+<message type="normal">Firmware path error</message>
+```
+
+```bash
+python /opt/bs/bslbatt-tool.py -c can0 -n 0x2 -f /data/vrmfilescache/48100.bin
+```
+
+```xml
+<message type="normal">Device id error</message>
+```
 
 ## Check Available CAN Gateway
 

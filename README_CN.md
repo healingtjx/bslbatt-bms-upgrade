@@ -15,7 +15,7 @@ XML；调试日志和设备错误详情输出到 stderr。
 - Linux SocketCAN 支持。
 - 已配置的 CAN 接口，例如 `can0` 或 `vecan0`。
 - GX 上选中的 CAN 口必须提前配置成 BSLBATT 设备要求的波特率，例如
-  `250 kbit/s`。
+  下方实测案例中的 `500 kbit/s`，或目标电池实际要求的波特率。
 
 脚本不会修改 CAN 波特率，也不会负责启停 CAN 接口。
 
@@ -64,6 +64,9 @@ python3 bslbatt-tool.py -c can0 -d
 python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin -d
 ```
 
+如果 Venus OS 镜像中的 `python` 指向 Python 3，也可以直接用 `python` 调用同样
+的命令。
+
 ## 参数说明
 
 | 参数 | 模式 | 是否必填 | 说明 |
@@ -104,6 +107,8 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 - 固件版本从 CAN ID `0x35F` 的第 2、3 字节解析为 `vX.Y`；
 - 序列号优先由 CAN ID `0x380` 和 `0x381` 拼接；
 - 描述优先使用设备名称，其次使用厂商、系列或型号字段；
+- 当版本、序列号或型号帧不完整时，工具仍会输出 BSLBATT 候选设备，并使用
+  `version="unknown"`、`serial="BSLBATT-can0"` 这类兜底值；
 - `bslbatt-tool.py` 中的默认 Product ID 仍是 `TODO_PRODUCT_ID`，最终交付前
   必须替换为 Victron 分配的 Product ID。
 
@@ -131,7 +136,7 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 升级器会把 BMS 错误帧 `0x18A3AA55` 视为设备存储器或升级异常。错误帧详情会
 始终输出到 stderr，便于排查。
 
-升级过程中会输出 XML 进度：
+升级过程中会输出 XML 进度，以下为省略后的示例：
 
 ```xml
 <message type="normal">Checking firmware</message>
@@ -143,6 +148,8 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 <message type="normal">Erasing device</message>
 <progress level="20" />
 <message type="normal">Writing firmware</message>
+<progress level="21" />
+...
 <progress level="90" />
 <message type="normal">Verifying firmware</message>
 <progress level="98" />
@@ -154,6 +161,71 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 当前状态：`locate_device()`、`erase_flash()` 和 `verify_firmware()` 仍是协议
 占位步骤。实际 CAN 传输流程已实现，但产品兼容性仍需要最终 BSLBATT 固件包格式，
 例如包头 magic、目标型号、目标版本、载荷长度、CRC 或签名。
+
+## GX 实测案例
+
+项目中保留了 GX 终端记录 `logs/upgrade_case.log`。成功案例运行在 CCGX 上，
+当时 `can0` 已经处于 UP 状态：
+
+```text
+3: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 100
+    can state ERROR-ACTIVE (berr-counter tx 0 rx 0) restart-ms 100
+          bitrate 500000 sample-point 0.846
+```
+
+升级前，列表模式在 `can0` 上发现了一个 BSLBATT 设备：
+
+```bash
+python bslbatt-tool.py -c can0
+```
+
+```xml
+<device serial="model770-can0" version="v1.23" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+```
+
+升级命令使用列表 XML 中的 `connection-id` 作为 `-n`，使用 VRM 缓存目录中的固件
+文件作为 `-f`：
+
+```bash
+python bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/124.bin
+```
+
+升级过程中 stdout 从 `Checking firmware` 到 `Update successful` 持续输出 Venus
+XML。写入阶段会输出 `21` 到 `90` 的递增进度。
+
+升级后，列表模式报告同一设备固件版本变为 `v1.24`：
+
+```xml
+<device serial="model770-can0" version="v1.24" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+```
+
+其他实测输出：
+
+当元数据帧不完整时，列表模式仍可以报告已检测到的 BSLBATT 候选设备：
+
+```xml
+<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+```
+
+固件路径不存在时：
+
+```bash
+python /opt/bs/bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/1123123.bin
+```
+
+```xml
+<message type="normal">Firmware path error</message>
+```
+
+设备 ID 不是当前单设备协议支持的 `0x0` 时：
+
+```bash
+python /opt/bs/bslbatt-tool.py -c can0 -n 0x2 -f /data/vrmfilescache/48100.bin
+```
+
+```xml
+<message type="normal">Device id error</message>
+```
 
 ## 检查 GX 上可用的 CAN 网关
 

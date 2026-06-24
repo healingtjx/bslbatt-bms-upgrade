@@ -9,6 +9,10 @@ Venus OS XML contract only. Debug output goes to stderr.
 中文阅读提示：
     这个脚本合并了设备列表和固件升级两个入口。标准输出 stdout 只能打印
     Venus OS 能识别的 XML；调试日志必须走 stderr，避免污染 XML。
+English note:
+    This script combines device listing and firmware update entry points.
+    Stdout must only print XML recognized by Venus OS; debug logs must go to
+    stderr to avoid contaminating the XML output.
 
 Example:
     ./bslbatt-tool.py -c can0
@@ -30,6 +34,7 @@ import zipfile
 
 
 # Venus OS / 调用方通过退出码判断失败类型；0 表示成功。
+# Venus OS / callers determine the failure type from the exit code; 0 means success.
 EXIT_OK = 0
 EXIT_GENERAL_ERROR = 1
 EXIT_CAN_INIT_ERROR = 2
@@ -66,24 +71,35 @@ CAN_ID_SERIAL_PART_2 = 0x381
 CAN_ID_FAMILY = 0x382
 
 # Linux SocketCAN 原始 CAN 帧结构：
+# Linux SocketCAN raw CAN frame structure:
 #   can_id: 4 字节
+#   can_id: 4 bytes
 #   can_dlc: 1 字节
+#   can_dlc: 1 byte
 #   padding: 3 字节
+#   padding: 3 bytes
 #   data: 8 字节
+#   data: 8 bytes
 CAN_FRAME_FORMAT = "=IB3x8s"
 CAN_FRAME_SIZE = struct.calcsize(CAN_FRAME_FORMAT)
 
 # SocketCAN 在 can_id 高位中携带扩展帧、远程帧、错误帧标志。
+# SocketCAN carries extended, remote, and error frame flags in the high bits of can_id.
 CAN_EFF_FLAG = 0x80000000
 CAN_RTR_FLAG = 0x40000000
 CAN_ERR_FLAG = 0x20000000
 CAN_ID_MASK = 0x1FFFFFFF
 
 # BSLBATT BMS 固件升级协议使用的 29 位扩展帧 ID。
+# 29-bit extended frame IDs used by the BSLBATT BMS firmware update protocol.
 # 命名规则：
+# Naming rules:
 #   REQ 表示上位机发给 BMS 的请求；
+#   REQ means a request sent from the host to the BMS.
 #   ACK 表示 BMS 回复上位机的确认；
+#   ACK means an acknowledgement sent from the BMS to the host.
 #   DATA_FRAME_BASE_ID 是数据帧起始 ID，每发一帧递增 1。
+#   DATA_FRAME_BASE_ID is the first data-frame ID and increments by 1 per frame.
 BMS_UPGRADE_START_REQ_ID = 0x18A055AA
 BMS_UPGRADE_START_ACK_ID = 0x18A0AA55
 BMS_UPGRADE_DATA_FRAME_BASE_ID = 0x13000001
@@ -93,7 +109,9 @@ BMS_UPGRADE_FINISH_ACK_ID = 0x18A2AA55
 BMS_UPGRADE_ERROR_ID = 0x18A3AA55
 
 # 每个 CAN 数据帧最多 8 字节。这里协议定义前 7 字节是固件数据，
+# Each CAN data frame carries up to 8 bytes. This protocol uses the first 7 bytes for firmware data,
 # 第 8 字节是前 7 字节求和后的低 8 位校验值。
+# and the 8th byte is the low 8-bit checksum of the first 7 bytes.
 BMS_UPGRADE_FRAME_DATA_SIZE = 7
 BMS_UPGRADE_FRAME_TOTAL_SIZE = 8
 # oldcode uses APP_BMS_UPGRADE_ACK_BATCH_SIZE; BMS_CAN.xlsx states the BMS
@@ -101,6 +119,7 @@ BMS_UPGRADE_FRAME_TOTAL_SIZE = 8
 BMS_UPGRADE_ACK_BATCH_SIZE = 10
 
 # 各阶段等待 BMS ACK 的超时时间。数据帧之间保留很短间隔，避免总线过载。
+# ACK timeouts for each stage. A short gap is kept between data frames to avoid overloading the bus.
 BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS = 10.0
 BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS = 10.0
 BMS_UPGRADE_FINISH_ACK_TIMEOUT_SECONDS = 10.0
@@ -111,43 +130,50 @@ BMS_CAN_OBSERVED_IDS = (CAN_ID_STATUS_OBSERVED, CAN_ID_FLAGS_OBSERVED, CAN_ID_CA
 
 
 class FirmwareError(Exception):
-    """固件包内容或格式不符合升级协议。"""
+    """固件包内容或格式不符合升级协议。
+    The firmware package content or format does not match the update protocol."""
 
     pass
 
 
 class DeviceNotFoundError(Exception):
-    """预留异常：表示未找到目标设备。当前 locate_device() 只清空缓冲区。"""
+    """预留异常：表示未找到目标设备。当前 locate_device() 只清空缓冲区。
+    Reserved exception for a missing target device. locate_device() currently only drains buffers."""
 
     pass
 
 
 class VerifyFailedError(Exception):
-    """预留异常：表示升级后固件校验失败。当前 verify_firmware() 尚未实现校验。"""
+    """预留异常：表示升级后固件校验失败。当前 verify_firmware() 尚未实现校验。
+    Reserved exception for post-update verification failure. verify_firmware() is not implemented yet."""
 
     pass
 
 
 class VerifyTimeoutError(Exception):
-    """预留异常：表示等待校验结果超时。"""
+    """预留异常：表示等待校验结果超时。
+    Reserved exception for timing out while waiting for verification results."""
 
     pass
 
 
 class MemoryErrorOnDevice(Exception):
-    """BMS 通过错误帧报告升级或存储异常。"""
+    """BMS 通过错误帧报告升级或存储异常。
+    The BMS reported an update or storage error through an error frame."""
 
     pass
 
 
 class DeviceIdError(ValueError):
-    """VRM 回传的 connection-id / -n 与当前单设备工具不匹配。"""
+    """VRM 回传的 connection-id / -n 与当前单设备工具不匹配。
+    The connection-id / -n returned by VRM does not match this single-device tool."""
 
     pass
 
 
 def configure_stdout():
-    """配置 stdout/stderr 为行缓冲，确保 Venus OS 能及时收到 XML 进度。"""
+    """配置 stdout/stderr 为行缓冲，确保 Venus OS 能及时收到 XML 进度。
+    Configure stdout/stderr as line-buffered so Venus OS receives XML progress promptly."""
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(line_buffering=True, write_through=True)
     if hasattr(sys.stderr, "reconfigure"):
@@ -155,18 +181,21 @@ def configure_stdout():
 
 
 def debug(enabled, message):
-    """调试日志只写 stderr，避免破坏 stdout 上的 XML 协议。"""
+    """调试日志只写 stderr，避免破坏 stdout 上的 XML 协议。
+    Write debug logs only to stderr to avoid breaking the XML protocol on stdout."""
     if enabled:
         print(message, file=sys.stderr, flush=True)
 
 
 def xml_escape(value):
-    """对 XML 文本内容做转义，避免消息里出现 <、& 等字符导致 XML 非法。"""
+    """对 XML 文本内容做转义，避免消息里出现 <、& 等字符导致 XML 非法。
+    Escape XML text content so characters such as < and & do not make the XML invalid."""
     return html.escape(str(value), quote=False)
 
 
 def xml_message(text):
-    """向 Venus OS 输出普通消息。stdout 上只能出现这类 XML。"""
+    """向 Venus OS 输出普通消息。stdout 上只能出现这类 XML。
+    Output a normal message to Venus OS. Only this XML should appear on stdout."""
     print('<message type="normal">{}</message>'.format(xml_escape(text)), flush=True)
 
 
@@ -174,7 +203,8 @@ _last_progress_level = None
 
 
 def xml_progress(level):
-    """向 Venus OS 输出进度；相同进度不会重复打印，减少 stdout 噪声。"""
+    """向 Venus OS 输出进度；相同进度不会重复打印，减少 stdout 噪声。
+    Output progress to Venus OS; identical levels are not repeated to reduce stdout noise."""
     global _last_progress_level
     level = max(0, min(100, int(level)))
     if level == _last_progress_level:
@@ -184,19 +214,22 @@ def xml_progress(level):
 
 
 def xml_attr(value):
-    """对 XML 属性值做转义。"""
+    """对 XML 属性值做转义。
+    Escape XML attribute values."""
     return html.escape(str(value), quote=True)
 
 
 def read_le16(data, offset):
-    """从 payload 指定偏移读取小端 16 位整数；长度不足时返回 None。"""
+    """从 payload 指定偏移读取小端 16 位整数；长度不足时返回 None。
+    Read a little-endian 16-bit integer from payload at offset; return None if too short."""
     if len(data) < offset + 2:
         return None
     return data[offset] | (data[offset + 1] << 8)
 
 
 def decode_battery_info_version(payload):
-    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 01 17 => v1.23。"""
+    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 01 17 => v1.23。
+    BYTE2/BYTE3 of 0x35F represent the firmware version, for example 02 03 01 17 => v1.23."""
     if len(payload) < 4:
         return ""
     return "v{}.{}".format(payload[2], payload[3])
@@ -220,12 +253,14 @@ def decode_victron_ascii(payload):
 
 
 def join_text_parts(*parts):
-    """拼接多个 CAN ASCII 字段，忽略空字段。"""
+    """拼接多个 CAN ASCII 字段，忽略空字段。
+    Join multiple CAN ASCII fields while ignoring empty fields."""
     return "".join(part for part in parts if part).strip()
 
 
 def contains_bslbatt(value):
-    """判断身份字段中是否包含 BSLBATT。"""
+    """判断身份字段中是否包含 BSLBATT。
+    Check whether the identity field contains BSLBATT."""
     return "BSLBATT" in value.upper()
 
 
@@ -347,14 +382,16 @@ class BmsCanLvDeviceState:
 
 
 def validate_can_interface(can_interface):
-    """校验 Venus OS 传入或扫描出的 CAN 接口名。"""
+    """校验 Venus OS 传入或扫描出的 CAN 接口名。
+    Validate a CAN interface name passed by Venus OS or discovered by scanning."""
     if not re.match(r"^(can|vecan)[0-9]+$", can_interface):
         raise ValueError("unsupported CAN interface: {}".format(can_interface))
     return can_interface
 
 
 def parse_node_id(value):
-    """解析 VRM 回传的 CAN connection-id / -n 参数。"""
+    """解析 VRM 回传的 CAN connection-id / -n 参数。
+    Parse the CAN connection-id / -n parameter returned by VRM."""
     try:
         node_id = int(str(value), 0)
     except (TypeError, ValueError):
@@ -365,7 +402,8 @@ def parse_node_id(value):
 
 
 def validate_node_id(node_id):
-    """BSLBATT 当前 CAN 升级协议固定为单设备，VRM 标识必须匹配列表输出。"""
+    """BSLBATT 当前 CAN 升级协议固定为单设备，VRM 标识必须匹配列表输出。
+    The current BSLBATT CAN update protocol is fixed to one device, so the VRM identity must match list output."""
     if node_id != DEFAULT_NODE_ID:
         raise DeviceIdError(
             "unsupported node id: 0x{:X}; this tool only supports {}".format(node_id, DEFAULT_NODE_ID_TEXT)
@@ -374,7 +412,8 @@ def validate_node_id(node_id):
 
 
 def parse_connection(connection):
-    """解析旧版连接字符串，例如 socketcan:can0/0x2A；新 VRM 调用优先使用 -c/-n。"""
+    """解析旧版连接字符串，例如 socketcan:can0/0x2A；新 VRM 调用优先使用 -c/-n。
+    Parse a legacy connection string such as socketcan:can0/0x2A; newer VRM calls should prefer -c/-n."""
     match = re.match(r"^socketcan:([^/]+)/(.+)$", connection)
     if not match:
         raise ValueError("unsupported connection: {}".format(connection))
@@ -403,7 +442,8 @@ def resolve_update_target(args):
 
 
 def open_can(interface_name):
-    """打开 Linux SocketCAN RAW 套接字并绑定到 can0/vecan0 等接口。"""
+    """打开 Linux SocketCAN RAW 套接字并绑定到 can0/vecan0 等接口。
+    Open a Linux SocketCAN RAW socket and bind it to an interface such as can0/vecan0."""
     if not hasattr(socket, "AF_CAN") or not hasattr(socket, "CAN_RAW"):
         raise OSError("SocketCAN is required on Victron GX / Venus OS")
     sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
@@ -413,7 +453,8 @@ def open_can(interface_name):
 
 
 def pack_can_frame(can_id, payload, extended=False):
-    """把 CAN ID 和 payload 打包成 Linux SocketCAN 需要的二进制帧。"""
+    """把 CAN ID 和 payload 打包成 Linux SocketCAN 需要的二进制帧。
+    Pack a CAN ID and payload into the binary frame required by Linux SocketCAN."""
     payload = bytes(bytearray(payload))
     if len(payload) > 8:
         raise ValueError("CAN payload must be <= 8 bytes")
@@ -424,12 +465,14 @@ def pack_can_frame(can_id, payload, extended=False):
 
 
 def send_can(sock, can_id, payload, extended=False):
-    """发送一帧 CAN。extended=True 时使用 29 位扩展帧。"""
+    """发送一帧 CAN。extended=True 时使用 29 位扩展帧。
+    Send one CAN frame. Use a 29-bit extended frame when extended=True."""
     sock.send(pack_can_frame(can_id, payload, extended))
 
 
 def unpack_can_frame(raw_frame):
-    """把 SocketCAN 收到的原始帧拆成便于日志和协议判断的字典。"""
+    """把 SocketCAN 收到的原始帧拆成便于日志和协议判断的字典。
+    Unpack a raw SocketCAN frame into a dictionary for logging and protocol checks."""
     can_id, data_len, data = struct.unpack(CAN_FRAME_FORMAT, raw_frame)
     return {
         "can_id": can_id & CAN_ID_MASK,
@@ -456,7 +499,8 @@ def list_available_can_interfaces():
 
 
 def print_device(device, can_interface, product_id, manufacturer_type):
-    """按 Venus OS 设备列表 XML 格式输出单个设备。"""
+    """按 Venus OS 设备列表 XML 格式输出单个设备。
+    Output one device using the Venus OS device-list XML format."""
     node_id = int(device["node_id"])
     connection_id = "0x{:X}".format(node_id)
     connection = "socketcan:{}/0x{:X}".format(can_interface, node_id)
@@ -478,7 +522,8 @@ def print_device(device, can_interface, product_id, manufacturer_type):
 
 
 def list_devices_on_interface(can_interface, args, found):
-    """在一个 CAN 接口上被动监听 BMS-CAN LV 帧并输出可升级设备。"""
+    """在一个 CAN 接口上被动监听 BMS-CAN LV 帧并输出可升级设备。
+    Passively listen for BMS-CAN LV frames on one CAN interface and output updatable devices."""
     try:
         sock = open_can(can_interface)
         sock.setblocking(False)
@@ -552,7 +597,8 @@ def list_devices_on_interface(can_interface, args, found):
 
 
 def list_devices(args):
-    """执行 --list：扫描指定或全部 CAN 接口并输出设备 XML。"""
+    """执行 --list：扫描指定或全部 CAN 接口并输出设备 XML。
+    Run --list: scan the specified or all CAN interfaces and output device XML."""
     if not PRODUCT_ID:
         debug(args.debug, "Victron product id is required; set PRODUCT_ID in bslbatt-tool.py")
         return EXIT_ARGUMENT_ERROR
@@ -582,7 +628,8 @@ def list_devices(args):
 
 
 def read_firmware_from_zip(path):
-    """从 zip 固件包中读取唯一的 .bin/.fw/.img 文件，并先做 zip CRC 检查。"""
+    """从 zip 固件包中读取唯一的 .bin/.fw/.img 文件，并先做 zip CRC 检查。
+    Read the single .bin/.fw/.img file from a zip firmware package after checking the zip CRC."""
     try:
         with zipfile.ZipFile(path, "r") as archive:
             bad_member = archive.testzip()
@@ -608,7 +655,8 @@ def read_firmware_from_zip(path):
 
 
 def read_firmware(path):
-    """读取固件文件；支持直接读取二进制文件，也支持读取 zip 包中的固件。"""
+    """读取固件文件；支持直接读取二进制文件，也支持读取 zip 包中的固件。
+    Read a firmware file; supports both direct binary files and firmware stored inside a zip package."""
     if not os.path.isfile(path):
         raise OSError("firmware file does not exist: {}".format(path))
     if zipfile.is_zipfile(path):
@@ -622,29 +670,34 @@ def read_firmware(path):
 
 
 def crc32_hex(data):
-    """计算固件 CRC32，仅用于日志/展示，不参与当前协议校验。"""
+    """计算固件 CRC32，仅用于日志/展示，不参与当前协议校验。
+    Calculate the firmware CRC32 for logging/display only; it is not used by the current protocol check."""
     return "{:08X}".format(binascii.crc32(data) & 0xFFFFFFFF)
 
 
 def le32(value):
-    """把整数编码为小端 32 位，协议中的 size/frame_count 都按小端传输。"""
+    """把整数编码为小端 32 位，协议中的 size/frame_count 都按小端传输。
+    Encode an integer as little-endian 32-bit; protocol size/frame_count fields are sent little-endian."""
     return struct.pack("<I", value & 0xFFFFFFFF)
 
 
 def read_le32(data):
-    """从 payload 前 4 字节读取小端 32 位整数；长度不足时按 0 处理。"""
+    """从 payload 前 4 字节读取小端 32 位整数；长度不足时按 0 处理。
+    Read a little-endian 32-bit integer from the first 4 payload bytes; treat short data as 0."""
     if len(data) < 4:
         return 0
     return struct.unpack("<I", data[:4])[0]
 
 
 def payload_hex(payload):
-    """把字节序列格式化成十六进制字符串，用于调试日志。"""
+    """把字节序列格式化成十六进制字符串，用于调试日志。
+    Format a byte sequence as a hexadecimal string for debug logs."""
     return " ".join("{:02X}".format(byte) for byte in payload)
 
 
 def can_id_name(can_id):
-    """把关键 CAN ID 转成可读名称，方便分析 CAN 日志。"""
+    """把关键 CAN ID 转成可读名称，方便分析 CAN 日志。
+    Convert key CAN IDs to readable names for easier CAN log analysis."""
     names = {
         BMS_UPGRADE_START_REQ_ID: "START_REQ",
         BMS_UPGRADE_START_ACK_ID: "START_ACK",
@@ -661,7 +714,8 @@ def can_id_name(can_id):
 
 
 def parse_control_payload(can_id, payload):
-    """按控制帧类型解析 payload，主要用于 CAN 日志辅助排查。"""
+    """按控制帧类型解析 payload，主要用于 CAN 日志辅助排查。
+    Parse the payload by control-frame type, mainly to aid CAN log troubleshooting."""
     if len(payload) != BMS_UPGRADE_FRAME_TOTAL_SIZE:
         return "invalid_len={}".format(len(payload))
     if can_id == BMS_UPGRADE_ERROR_ID:
@@ -676,7 +730,8 @@ def parse_control_payload(can_id, payload):
 
 
 def ceil_div(value, divisor):
-    """向上取整除法，用于把固件长度补齐到 7 字节帧边界。"""
+    """向上取整除法，用于把固件长度补齐到 7 字节帧边界。
+    Ceiling division used to align firmware length to the 7-byte frame boundary."""
     return (value + divisor - 1) // divisor
 
 
@@ -687,6 +742,11 @@ def validate_bslbatt_firmware(firmware):
     中文说明：
         当前实现只做最基础检查：非空、传输大小/帧数不超过 32 位。
         真正的固件头、型号、版本、签名、CRC 等校验还需要后续按实际包格式补齐。
+    English note:
+        The current implementation only performs basic checks: non-empty data
+        and transfer size/frame count within 32 bits.
+        Real firmware header, model, version, signature, CRC, and other checks
+        still need to be completed according to the actual package format.
 
     Replace this with the actual package checks, for example:
         header magic
@@ -723,10 +783,18 @@ class BslbattFirmwareUpdater:
         3. 每 10 帧等待一次 BMS 数据 ACK；
         4. 发送结束升级请求；
         5. 解析错误帧、记录 CAN 日志。
+    English note:
+        This class only handles the BMS CAN update protocol itself:
+        1. Send the start update request.
+        2. Send firmware data in 7-byte frames.
+        3. Wait for a BMS data ACK after every 10 frames.
+        4. Send the finish update request.
+        5. Parse error frames and record CAN logs.
     """
 
     def __init__(self, sock, node_id, firmware, firmware_info, debug_enabled=False, can_log_path=None):
-        """保存升级上下文和传输状态；初始化时写一条 CAN 日志头。"""
+        """保存升级上下文和传输状态；初始化时写一条 CAN 日志头。
+        Store update context and transfer state; write a CAN log header during initialization."""
         self.sock = sock
         self.node_id = node_id
         self.firmware = firmware
@@ -752,17 +820,20 @@ class BslbattFirmwareUpdater:
         )
 
     def debug(self, message):
-        """类内部调试日志入口，受 --debug 控制。"""
+        """类内部调试日志入口，受 --debug 控制。
+        Internal debug-log entry point controlled by --debug."""
         debug(self.debug_enabled, message)
 
     def send_extended(self, can_id, payload):
-        """发送 BSLBATT 升级协议使用的 29 位扩展 CAN 帧，并打印调试日志。"""
+        """发送 BSLBATT 升级协议使用的 29 位扩展 CAN 帧，并打印调试日志。
+        Send a 29-bit extended CAN frame used by the BSLBATT update protocol and print debug logs."""
         payload_hex = " ".join("{:02X}".format(byte) for byte in payload)
         self.debug("TX id=0x{:08X} len={} data={}".format(can_id, len(payload), payload_hex))
         send_can(self.sock, can_id, payload, extended=True)
 
     def drain_control_frames(self):
-        """清空当前 socket 中已积压的 CAN 帧，避免旧 ACK 干扰新一次升级流程。"""
+        """清空当前 socket 中已积压的 CAN 帧，避免旧 ACK 干扰新一次升级流程。
+        Drain queued CAN frames from the current socket so stale ACKs do not interfere with a new update."""
         while True:
             try:
                 readable, _, _ = select.select([self.sock], [], [], 0)
@@ -777,7 +848,8 @@ class BslbattFirmwareUpdater:
             self.log_can_frame("RX_DRAIN", unpack_can_frame(raw_frame))
 
     def receive_control_frame(self, expected_can_id, timeout):
-        """等待指定 CAN ID 的 ACK；期间会忽略无关帧，遇到错误帧立即失败。"""
+        """等待指定 CAN ID 的 ACK；期间会忽略无关帧，遇到错误帧立即失败。
+        Wait for the ACK with the specified CAN ID; ignore unrelated frames and fail immediately on error frames."""
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -792,29 +864,34 @@ class BslbattFirmwareUpdater:
             frame = unpack_can_frame(raw_frame)
             self.log_can_frame("RX", frame, expected_can_id)
             # 升级协议只接受扩展数据帧；错误帧、远程帧、标准帧都忽略。
+            # The update protocol only accepts extended data frames; error, remote, and standard frames are ignored.
             if frame["is_error"] or frame["is_remote"] or not frame["is_extended"]:
                 continue
 
             can_id = frame["can_id"]
             payload = frame["data"]
             # BMS 主动发错误帧时，映射成设备端内存/升级异常。
+            # When the BMS sends an error frame, map it to a device-side memory/update exception.
             if can_id == BMS_UPGRADE_ERROR_ID:
                 self.log_rx(can_id, payload)
                 self.raise_upgrade_error(payload, expected_can_id)
 
             # 总线上可能有其他设备/其他协议的帧，这里只等待目标 ACK。
+            # Other devices/protocols may be on the bus, so only the target ACK is accepted here.
             if can_id != expected_can_id:
                 continue
 
             self.log_rx(can_id, payload)
             # 控制帧固定 8 字节，不满足则继续等下一帧。
+            # Control frames are fixed at 8 bytes; otherwise keep waiting for the next frame.
             if len(payload) != BMS_UPGRADE_FRAME_TOTAL_SIZE:
                 self.debug("Ignore invalid ACK length for 0x{:08X}: {}".format(can_id, len(payload)))
                 continue
             return payload
 
     def raise_upgrade_error(self, payload, expected_can_id):
-        """把 BMS 错误帧统一映射成升级失败异常。"""
+        """把 BMS 错误帧统一映射成升级失败异常。
+        Map BMS error frames into update failure exceptions consistently."""
         payload_str = payload_hex(payload) if payload else "(empty)"
         raise MemoryErrorOnDevice(
             "BMS reported upgrade error frame: id=0x{:08X} len={} data=[{}] expected_ack=0x{:08X} sent_frames={}/{} next_offset={}".format(
@@ -829,7 +906,8 @@ class BslbattFirmwareUpdater:
         )
 
     def poll_upgrade_error(self, timeout):
-        """在帧间隔内轮询 BMS 错误帧；发现错误立即停止后续发送。"""
+        """在帧间隔内轮询 BMS 错误帧；发现错误立即停止后续发送。
+        Poll for BMS error frames during the inter-frame interval and stop sending immediately if one is found."""
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -858,7 +936,9 @@ class BslbattFirmwareUpdater:
                 self.raise_upgrade_error(payload, BMS_UPGRADE_DATA_ACK_ID)
 
             # ACK 留给 receive_control_frame()/wait_data_ack() 做完整校验；
+            # Leave ACKs for receive_control_frame()/wait_data_ack() to validate fully.
             # 这里继续保持原来的帧间隔，避免 ACK 提前到达后下一帧过早发送。
+            # Keep the original frame interval here so an early ACK does not make the next frame send too soon.
             if can_id in (BMS_UPGRADE_START_ACK_ID, BMS_UPGRADE_DATA_ACK_ID, BMS_UPGRADE_FINISH_ACK_ID):
                 if remaining > 0:
                     time.sleep(remaining)
@@ -868,11 +948,13 @@ class BslbattFirmwareUpdater:
             self.log_can_frame("RX_POLL_DROP", frame)
 
     def log_rx(self, can_id, payload):
-        """把收到的有效控制帧输出到调试日志。"""
+        """把收到的有效控制帧输出到调试日志。
+        Output received valid control frames to the debug log."""
         self.debug("RX id=0x{:08X} len={} data={}".format(can_id, len(payload), payload_hex(payload)))
 
     def write_can_log(self, line):
-        """追加写 CAN 日志；写失败后会关闭后续日志写入，避免影响升级。"""
+        """追加写 CAN 日志；写失败后会关闭后续日志写入，避免影响升级。
+        Append to the CAN log; disable later log writes after a failure so the update is not affected."""
         if not self.can_log_path or self.can_log_failed:
             return
         try:
@@ -883,7 +965,8 @@ class BslbattFirmwareUpdater:
             self.debug("CAN log write failed: {}".format(exc))
 
     def log_can_frame(self, direction, frame, expected_can_id=None):
-        """把 CAN 帧解析成一行可读日志，包含方向、ID、标志位、payload 和解析字段。"""
+        """把 CAN 帧解析成一行可读日志，包含方向、ID、标志位、payload 和解析字段。
+        Render a CAN frame as one readable log line with direction, ID, flags, payload, and parsed fields."""
         can_id = frame["can_id"]
         payload = frame["data"]
         flags = []
@@ -915,15 +998,18 @@ class BslbattFirmwareUpdater:
         )
 
     def size_and_count_payload(self):
-        """开始/结束请求的 payload：补齐后的传输字节数 + 总帧数。"""
+        """开始/结束请求的 payload：补齐后的传输字节数 + 总帧数。
+        Payload for start/finish requests: padded transfer byte count plus total frame count."""
         return le32(self.transfer_size) + le32(self.frame_count)
 
     def locate_device(self):
-        """设备定位阶段。当前协议没有主动探测，只清空旧帧作为准备。"""
+        """设备定位阶段。当前协议没有主动探测，只清空旧帧作为准备。
+        Device location stage. The current protocol has no active probe and only drains stale frames."""
         self.drain_control_frames()
 
     def enter_bootloader(self):
-        """发送开始升级请求，等待 BMS 的 START_ACK，表示设备进入升级流程。"""
+        """发送开始升级请求，等待 BMS 的 START_ACK，表示设备进入升级流程。
+        Send the start update request and wait for the BMS START_ACK to indicate the device entered update flow."""
         self.debug(
             "prepare firmware rawSize={} transferSize={} frameCount={} node_id=0x{:X}".format(
                 self.firmware_size,
@@ -936,11 +1022,13 @@ class BslbattFirmwareUpdater:
         self.receive_control_frame(BMS_UPGRADE_START_ACK_ID, BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS)
 
     def erase_flash(self):
-        """擦除阶段占位。当前 BMS 协议可能在 START_REQ 后由设备内部自动处理。"""
+        """擦除阶段占位。当前 BMS 协议可能在 START_REQ 后由设备内部自动处理。
+        Erase-stage placeholder. The current BMS protocol may handle erase internally after START_REQ."""
         return
 
     def write_firmware(self):
-        """按批次发送固件数据；每 10 帧等待一次 DATA_ACK。"""
+        """按批次发送固件数据；每 10 帧等待一次 DATA_ACK。
+        Send firmware data in batches and wait for a DATA_ACK after every 10 frames."""
         while self.sent_frame_count < self.frame_count:
             batch_target = min(self.frame_count, self.sent_frame_count + BMS_UPGRADE_ACK_BATCH_SIZE)
             while self.sent_frame_count < batch_target:
@@ -955,16 +1043,20 @@ class BslbattFirmwareUpdater:
             self.log_transfer_progress("ACK")
 
     def send_data_frame(self):
-        """发送单个数据帧：7 字节固件数据 + 1 字节求和校验。"""
+        """发送单个数据帧：7 字节固件数据 + 1 字节求和校验。
+        Send one data frame: 7 bytes of firmware data plus a 1-byte sum checksum."""
         chunk = self.firmware[self.next_offset : self.next_offset + BMS_UPGRADE_FRAME_DATA_SIZE]
         read_size = len(chunk)
         # 最后一帧不足 7 字节时用 0xFF 填充，保证 payload 固定 8 字节。
+        # Pad the last frame with 0xFF when it has fewer than 7 bytes so the payload is always 8 bytes.
         payload = bytearray(b"\xFF" * BMS_UPGRADE_FRAME_TOTAL_SIZE)
         payload[:read_size] = chunk
         # 第 8 字节是前 7 字节求和后的低 8 位，用于 BMS 侧快速校验。
+        # The 8th byte is the low 8 bits of the first 7 bytes' sum for quick BMS-side checking.
         payload[7] = sum(payload[:BMS_UPGRADE_FRAME_DATA_SIZE]) & 0xFF
 
         # 数据帧 CAN ID 从 0x13000001 开始，每发送一帧递增。
+        # Data-frame CAN IDs start at 0x13000001 and increment for each sent frame.
         can_id = BMS_UPGRADE_DATA_FRAME_BASE_ID + self.sent_frame_count
         self.send_extended(can_id, payload)
 
@@ -973,21 +1065,25 @@ class BslbattFirmwareUpdater:
         self.last_frame_tail = bytes(payload[4:8])
 
     def wait_data_ack(self, expected_frame_count):
-        """等待数据 ACK，并校验 ACK 中的累计帧数和最后一帧尾部字段。"""
+        """等待数据 ACK，并校验 ACK 中的累计帧数和最后一帧尾部字段。
+        Wait for a data ACK and validate the accumulated frame count and last-frame tail field."""
         while True:
             payload = self.receive_control_frame(BMS_UPGRADE_DATA_ACK_ID, BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS)
             acked_frame_count = read_le32(payload)
             tail = payload[4:8]
             # 全 FF ACK 被视为通用确认，直接通过。
+            # An all-FF ACK is treated as a generic acknowledgement and accepted immediately.
             if payload == b"\xFF" * BMS_UPGRADE_FRAME_TOTAL_SIZE:
                 return
             # ACK 中应返回当前批次已接收的累计帧数，不匹配则忽略继续等。
+            # The ACK should return the accumulated received frame count for this batch; ignore mismatches and keep waiting.
             if acked_frame_count != expected_frame_count:
                 self.debug(
                     "Ignore data ACK frameCount={}, expected={}".format(acked_frame_count, expected_frame_count)
                 )
                 continue
             # ACK 后 4 字节应等于最后一帧 payload[4:8]，用于确认 BMS 收到正确批次。
+            # The last 4 ACK bytes should match the last frame payload[4:8], confirming the BMS received the right batch.
             if tail != self.last_frame_tail:
                 self.debug(
                     "Ignore data ACK tail={}, expected={}".format(tail.hex().upper(), self.last_frame_tail.hex().upper())
@@ -996,7 +1092,8 @@ class BslbattFirmwareUpdater:
             return
 
     def log_transfer_progress(self, stage):
-        """写入传输进度到 CAN 日志；SEND 阶段同百分比只记录一次。"""
+        """写入传输进度到 CAN 日志；SEND 阶段同百分比只记录一次。
+        Write transfer progress to the CAN log; during SEND, each percentage is logged only once."""
         percent = int((self.sent_frame_count * 100) / max(1, self.frame_count))
         if stage != "ACK" and percent == self.last_logged_progress:
             return
@@ -1014,16 +1111,19 @@ class BslbattFirmwareUpdater:
         )
 
     def verify_firmware(self):
-        """校验阶段占位。当前没有额外读取设备校验结果。"""
+        """校验阶段占位。当前没有额外读取设备校验结果。
+        Verification-stage placeholder. No extra device verification result is read currently."""
         return
 
     def reboot_application(self):
-        """发送结束升级请求，等待 FINISH_ACK，BMS 随后应启动新应用。"""
+        """发送结束升级请求，等待 FINISH_ACK，BMS 随后应启动新应用。
+        Send the finish update request and wait for FINISH_ACK; the BMS should then start the new application."""
         self.send_extended(BMS_UPGRADE_FINISH_REQ_ID, self.size_and_count_payload())
         self.receive_control_frame(BMS_UPGRADE_FINISH_ACK_ID, BMS_UPGRADE_FINISH_ACK_TIMEOUT_SECONDS)
 
     def run(self):
-        """对外的完整升级流程，同时输出 Venus OS 需要的 XML 消息和进度。"""
+        """对外的完整升级流程，同时输出 Venus OS 需要的 XML 消息和进度。
+        Public full update flow that also outputs the XML messages and progress required by Venus OS."""
         xml_message("Checking firmware")
         debug(
             self.debug_enabled,
@@ -1058,8 +1158,10 @@ class BslbattFirmwareUpdater:
 
 
 def update(args):
-    """执行 --update：参数校验、固件读取、CAN 初始化、运行升级并映射退出码。"""
+    """执行 --update：参数校验、固件读取、CAN 初始化、运行升级并映射退出码。
+    Run --update: validate arguments, read firmware, initialize CAN, run the update, and map exit codes."""
     # Venus OS 上传后的固件路径应为绝对路径，避免脚本在不同工作目录下读错文件。
+    # The firmware path uploaded by Venus OS should be absolute to avoid reading the wrong file from another cwd.
     if not os.path.isabs(args.file):
         xml_message("Firmware path error")
         debug(args.debug, "firmware file path must be absolute: {}".format(args.file))
@@ -1082,6 +1184,7 @@ def update(args):
 
     try:
         # 先在本地读取并检查固件，避免已经让设备进入升级模式后才发现文件问题。
+        # Read and check the firmware locally first so file issues are found before the device enters update mode.
         firmware = read_firmware(args.file)
         firmware_info = validate_bslbatt_firmware(firmware)
     except OSError as exc:
@@ -1095,6 +1198,7 @@ def update(args):
 
     try:
         # 只有文件和参数都通过后才打开 CAN；CAN 初始化失败单独返回退出码 2。
+        # Open CAN only after file and arguments pass; CAN initialization failure returns exit code 2 separately.
         sock = open_can(can_interface)
     except OSError as exc:
         xml_message("CAN init failed")
@@ -1106,6 +1210,7 @@ def update(args):
         updater.run()
         return EXIT_OK
     # 下面的异常处理会把内部错误转换成 Venus OS 可识别的 XML 消息和退出码。
+    # The exception handling below converts internal errors to XML messages and exit codes recognized by Venus OS.
     except NotImplementedError as exc:
         xml_message("Update protocol is not implemented")
         debug(args.debug, str(exc))
@@ -1121,6 +1226,7 @@ def update(args):
     except MemoryErrorOnDevice as exc:
         xml_message("Device memory error")
         # 设备返回的错误帧详情对排查非常关键，无论是否开启 --debug 都打到 stderr。
+        # Device error-frame details are critical for troubleshooting, so always print them to stderr even without --debug.
         print("device error: {}".format(exc), file=sys.stderr, flush=True)
         return EXIT_MEMORY_ERROR
     except VerifyTimeoutError as exc:
@@ -1145,11 +1251,13 @@ def update(args):
         return EXIT_GENERAL_ERROR
     finally:
         # 无论成功失败都关闭 CAN socket，释放接口资源。
+        # Always close the CAN socket to release interface resources, whether the update succeeds or fails.
         sock.close()
 
 
 def build_parser():
-    """定义合并工具命令行参数；兼容 Venus OS 文档示例和显式模式。"""
+    """定义合并工具命令行参数；兼容 Venus OS 文档示例和显式模式。
+    Define merged-tool CLI arguments, compatible with Venus OS document examples and explicit modes."""
     parser = argparse.ArgumentParser(description="List and update BSLBATT devices for Venus OS")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("-l", "--list", action="store_true", help="list updatable devices")
@@ -1201,7 +1309,8 @@ def infer_mode(args):
 
 
 def main():
-    """脚本入口：配置输出缓冲、解析参数，然后执行列表或升级。"""
+    """脚本入口：配置输出缓冲、解析参数，然后执行列表或升级。
+    Script entry point: configure output buffering, parse arguments, then list or update."""
     configure_stdout()
     args = build_parser().parse_args()
     mode = infer_mode(args)
@@ -1225,4 +1334,5 @@ def main():
 
 if __name__ == "__main__":
     # shell/系统通常只使用退出码低 8 位，这里显式截断。
+    # Shells/systems usually use only the low 8 bits of the exit code, so truncate explicitly here.
     sys.exit(main() & 0xFF)

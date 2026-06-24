@@ -49,7 +49,7 @@ EXIT_VERIFY_FAILED = 10
 EXIT_VERIFY_TIMEOUT = 11
 
 MANUFACTURER_TYPE = "bslbatt"
-PRODUCT_ID = "TODO_PRODUCT_ID"
+PRODUCT_ID = "B008"
 DEVICE_DESCRIPTION = "BSLBATT BMS"
 DEFAULT_NODE_ID = 0
 DEFAULT_NODE_ID_TEXT = "0x{:X}".format(DEFAULT_NODE_ID)
@@ -426,10 +426,13 @@ def resolve_update_target(args):
     """
     Resolve the target selected by VRM.
 
-    The VRM remote-toolbox contract sends the selected CAN bus as -c and the
-    device identity returned in XML as -n/connection-id. The legacy
-    socketcan:canX/id string remains accepted for existing local scripts.
+    mqtt-rpc/ThirdPartyUpdater passes the XML connection string back as -c,
+    for example socketcan:can0/0x0. Also keep supporting the explicit
+    -c can0 -n 0x0 form and the legacy --connection option.
     """
+    if args.can and args.can.startswith("socketcan:"):
+        return parse_connection(args.can)
+
     if args.can or args.node_id is not None:
         if not args.can or args.node_id is None:
             raise ValueError("--update requires both -c/--can and -n/--node-id")

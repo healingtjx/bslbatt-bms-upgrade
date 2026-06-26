@@ -191,7 +191,7 @@ python bslbatt-tool.py -c can0
 ```
 
 ```xml
-<device serial="BSLBATT770-can0" version="1.23" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 The update command used the XML `connection-id` value as `-n` and the VRM cache
@@ -208,7 +208,7 @@ The update printed Venus XML progress from firmware checking through
 After the update, list mode reported the same device at firmware `1.24`:
 
 ```xml
-<device serial="BSLBATT770-can0" version="1.24" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 Additional observed outputs:

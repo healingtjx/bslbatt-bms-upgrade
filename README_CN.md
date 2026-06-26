@@ -180,7 +180,7 @@ python bslbatt-tool.py -c can0
 ```
 
 ```xml
-<device serial="BSLBATT770-can0" version="1.23" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 升级命令使用列表 XML 中的 `connection-id` 作为 `-n`，使用 VRM 缓存目录中的固件
@@ -196,7 +196,7 @@ XML。写入阶段会输出 `21` 到 `90` 的递增进度。
 升级后，列表模式报告同一设备固件版本变为 `1.24`：
 
 ```xml
-<device serial="BSLBATT770-can0" version="1.24" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 其他实测输出：

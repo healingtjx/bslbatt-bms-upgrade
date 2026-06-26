@@ -51,7 +51,7 @@ EXIT_VERIFY_TIMEOUT = 11
 MANUFACTURER_TYPE = "bslbatt"
 PRODUCT_ID = "0xB021"
 DEVICE_DESCRIPTION = "BSLBATT BMS"
-DEVICE_MODEL_PREFIX = "BSLBATT"
+DEVICE_FALLBACK_NAME = "BSLBATT"
 DEFAULT_NODE_ID = 0
 DEFAULT_NODE_ID_TEXT = "0x{:X}".format(DEFAULT_NODE_ID)
 
@@ -367,7 +367,7 @@ class BmsCanLvDeviceState:
         if self.family:
             parts.append(self.family)
         if self.model is not None:
-            parts.append("{} {}".format(DEVICE_MODEL_PREFIX, self.model))
+            parts.append(DEVICE_FALLBACK_NAME)
         return " ".join(parts) if parts else DEVICE_DESCRIPTION
 
     def _fallback_serial(self):
@@ -377,7 +377,7 @@ class BmsCanLvDeviceState:
         if self.family:
             parts.append(self.family)
         if self.model is not None:
-            parts.append("{}{}".format(DEVICE_MODEL_PREFIX, self.model))
+            parts.append(DEVICE_FALLBACK_NAME)
         parts.append(self.can_interface)
         return "-".join(parts)
 

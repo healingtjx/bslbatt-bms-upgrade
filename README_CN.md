@@ -90,7 +90,7 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 每个发现设备会输出一行 XML：
 
 ```xml
-<device serial="ABC123" version="v1.23" description="BSLBATT BMS" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="ABC123" version="1.23" description="BSLBATT BMS" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 关键字段：
@@ -104,7 +104,7 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 
 当前设备元数据解析：
 
-- 固件版本从 CAN ID `0x35F` 的第 2、3 字节解析为 `vX.Y`；
+- 固件版本从 CAN ID `0x35F` 的第 2、3 字节解析为 `X.Y`；
 - 序列号优先由 CAN ID `0x380` 和 `0x381` 拼接；
 - 描述优先使用设备名称，其次使用厂商、系列或型号字段；
 - 当版本、序列号或型号帧不完整时，工具仍会输出 BSLBATT 候选设备，并使用
@@ -180,7 +180,7 @@ python bslbatt-tool.py -c can0
 ```
 
 ```xml
-<device serial="model770-can0" version="v1.23" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT770-can0" version="1.23" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 升级命令使用列表 XML 中的 `connection-id` 作为 `-n`，使用 VRM 缓存目录中的固件
@@ -193,10 +193,10 @@ python bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/124.bin
 升级过程中 stdout 从 `Checking firmware` 到 `Update successful` 持续输出 Venus
 XML。写入阶段会输出 `21` 到 `90` 的递增进度。
 
-升级后，列表模式报告同一设备固件版本变为 `v1.24`：
+升级后，列表模式报告同一设备固件版本变为 `1.24`：
 
 ```xml
-<device serial="model770-can0" version="v1.24" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT770-can0" version="1.24" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 其他实测输出：

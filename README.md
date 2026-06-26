@@ -94,7 +94,7 @@ without a conflicting identity.
 The list output for each discovered device is a single XML element:
 
 ```xml
-<device serial="ABC123" version="v1.23" description="BSLBATT BMS" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="ABC123" version="1.23" description="BSLBATT BMS" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 Important fields:
@@ -109,7 +109,7 @@ with code `0`.
 
 Current device metadata parsing:
 
-- firmware version is decoded from CAN ID `0x35F` bytes 2 and 3 as `vX.Y`;
+- firmware version is decoded from CAN ID `0x35F` bytes 2 and 3 as `X.Y`;
 - serial number is built from CAN IDs `0x380` and `0x381` when available;
 - description is built from device name, manufacturer/family, or model fields
   when available;
@@ -191,7 +191,7 @@ python bslbatt-tool.py -c can0
 ```
 
 ```xml
-<device serial="model770-can0" version="v1.23" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT770-can0" version="1.23" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 The update command used the XML `connection-id` value as `-n` and the VRM cache
@@ -205,10 +205,10 @@ The update printed Venus XML progress from firmware checking through
 `Update successful`. During writing it emitted incremental progress levels
 `21` through `90`.
 
-After the update, list mode reported the same device at firmware `v1.24`:
+After the update, list mode reported the same device at firmware `1.24`:
 
 ```xml
-<device serial="model770-can0" version="v1.24" description="model 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT770-can0" version="1.24" description="BSLBATT 770" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 Additional observed outputs:

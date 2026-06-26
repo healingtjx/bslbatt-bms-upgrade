@@ -51,6 +51,7 @@ EXIT_VERIFY_TIMEOUT = 11
 MANUFACTURER_TYPE = "bslbatt"
 PRODUCT_ID = "0xB021"
 DEVICE_DESCRIPTION = "BSLBATT BMS"
+DEVICE_MODEL_PREFIX = "BSLBATT"
 DEFAULT_NODE_ID = 0
 DEFAULT_NODE_ID_TEXT = "0x{:X}".format(DEFAULT_NODE_ID)
 
@@ -228,11 +229,11 @@ def read_le16(data, offset):
 
 
 def decode_battery_info_version(payload):
-    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 01 17 => v1.23。
-    BYTE2/BYTE3 of 0x35F represent the firmware version, for example 02 03 01 17 => v1.23."""
+    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 01 17 => 1.23。
+    BYTE2/BYTE3 of 0x35F represent the firmware version, for example 02 03 01 17 => 1.23."""
     if len(payload) < 4:
         return ""
-    return "v{}.{}".format(payload[2], payload[3])
+    return "{}.{}".format(payload[2], payload[3])
 
 
 def decode_victron_ascii(payload):
@@ -366,7 +367,7 @@ class BmsCanLvDeviceState:
         if self.family:
             parts.append(self.family)
         if self.model is not None:
-            parts.append("model {}".format(self.model))
+            parts.append("{} {}".format(DEVICE_MODEL_PREFIX, self.model))
         return " ".join(parts) if parts else DEVICE_DESCRIPTION
 
     def _fallback_serial(self):
@@ -376,7 +377,7 @@ class BmsCanLvDeviceState:
         if self.family:
             parts.append(self.family)
         if self.model is not None:
-            parts.append("model{}".format(self.model))
+            parts.append("{}{}".format(DEVICE_MODEL_PREFIX, self.model))
         parts.append(self.can_interface)
         return "-".join(parts)
 

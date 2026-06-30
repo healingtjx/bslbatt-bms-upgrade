@@ -229,11 +229,12 @@ def read_le16(data, offset):
 
 
 def decode_battery_info_version(payload):
-    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 01 17 => 1.23。
-    BYTE2/BYTE3 of 0x35F represent the firmware version, for example 02 03 01 17 => 1.23."""
+    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 12 45 => 1.245。
+    BYTE2/BYTE3 of 0x35F represent the firmware version, for example 02 03 12 45 => 1.245."""
     if len(payload) < 4:
         return ""
-    return "{}.{}".format(payload[2], payload[3])
+    version_digits = "{}{:02d}".format(payload[2], payload[3])
+    return "{}.{}".format(version_digits[0], version_digits[1:])
 
 
 def decode_victron_ascii(payload):

@@ -18,6 +18,8 @@ to stderr.
 - Minimum installed firmware version required for remote update: `V1.245`.
 - Test firmware versions: `V1.245` and `V1.246`.
 - Both `V1.245 -> V1.246` upgrade and `V1.246 -> V1.245` downgrade are supported.
+- Firmware filenames use `V1.245`/`V1.246`; device discovery reports these
+  versions as `12.45`/`12.46`, matching the GX device display.
 
 The test firmware binaries are not distributed through the public Git
 repository. `BSL-V1.245.bin` and `BSL-V1.246.bin` are delivered to Victron as
@@ -69,20 +71,20 @@ python3 bslbatt-tool.py --list -c can0
 Update the selected device using the Venus OS style arguments:
 
 ```bash
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
 ```
 
 The explicit update flag is optional when `-f` is present, but can be used:
 
 ```bash
-python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
+python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
 ```
 
 Enable debug logs:
 
 ```bash
 python3 bslbatt-tool.py -c can0 -d
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin -d
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin -d
 ```
 
 On Venus OS images where `python` points to Python 3, the same commands can be
@@ -112,7 +114,7 @@ without a conflicting identity.
 The list output for each discovered device is a single XML element:
 
 ```xml
-<device serial="ABC123" version="1.245" description="BSLBATT BMS" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="ABC123" version="12.45" description="BSLBATT BMS" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 Important fields:
@@ -187,16 +189,37 @@ Progress XML emitted during update, abridged:
 <message type="normal">Update successful</message>
 ```
 
-Current status: `locate_device()`, `erase_flash()`, and `verify_firmware()` are
-protocol placeholders. The `BSL` filename-prefix check blocks obvious firmware
-for other products, but complete product compatibility checks still need the
-final BSLBATT firmware package format, such as magic header, target model,
-target version, payload length, CRC, or signature.
+Current limitations: `locate_device()`, `erase_flash()`, and
+`verify_firmware()` are protocol placeholders. The `BSL` filename-prefix check
+blocks obvious firmware for other products, but it does not validate raw BIN
+content, target model, hardware revision, version path, CRC, or signature.
+Only firmware obtained through the official BSLBATT delivery channel may be
+used.
+
+## Verified Test Status
+
+The formal single-device tests are recorded in `logs/01_*.log` through
+`logs/09_*.log`:
+
+- `V1.245 -> V1.246`, `V1.246 -> V1.245`, and repeated upgrades completed
+  successfully, and device discovery reported `12.45` or `12.46` afterward.
+- A corrupted ZIP member was rejected with exit code `9` before CAN was opened.
+- A firmware filename not starting with uppercase `BSL` was rejected with exit
+  code `5` before CAN was opened.
+- Disconnecting CAN at approximately 52% returned timeout code `4`. The BMS
+  remained in its bootloader and required a BMS restart before application CAN
+  communication recovered.
+- The single-device normal-load 400-second case passed. CAN transfer time was
+  `373.688` seconds and the conservative completion bound was approximately
+  `385.714` seconds.
+- Multi-module behavior was not tested because only one logical device at
+  `can0/0x0` was confirmed and the module update mechanism is not defined.
 
 ## Historical GX Development Case
 
 The project includes an earlier GX terminal record in `logs/upgrade_case.log`.
-It records a development test from version 1.23 to 1.24, which is below the
+It preserves the version strings produced by the historical display rule and
+records a development test from version 1.23 to 1.24, which is below the
 currently supported minimum remote-update version `V1.245`. It is retained as
 historical implementation evidence and is not the formal release acceptance
 test. The case was run on a CCGX where `can0` was already up:
@@ -296,12 +319,11 @@ listed above.
 
 ## Final Delivery Checklist
 
-- Confirm the final BSLBATT firmware package format and add real model/version
-  compatibility validation.
-- Confirm whether `locate_device()`, `erase_flash()`, and `verify_firmware()`
-  should remain no-op steps for the final BSLBATT protocol.
-- Run the tool on a GX / Venus OS device with the target BMS and verify
-  XML-only stdout.
-- Test CAN disconnection, corrupt/incompatible firmware, supported module
-  configurations, recovery behavior, and the Venus OS 400-second limit.
-- Create and push the release tag only after all release acceptance tests pass.
+- [x] Complete the agreed code changes and single-device hardware tests.
+- [x] Record test cases 01 through 09, with the multi-module case explicitly
+  marked blocked/not tested.
+- [x] Keep test firmware under the ignored local `doc/firmware/` directory and
+  out of the public Git repository.
+- [ ] Complete the product metadata and English delivery documents listed in
+  `doc/Victron远程固件升级交付任务计划.md`.
+- [ ] Review the final commit and create/push the release tag.

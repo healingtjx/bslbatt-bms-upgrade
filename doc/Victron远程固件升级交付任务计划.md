@@ -20,10 +20,12 @@
 
 当前仓库：`bslbatt-bms-upgrade`
 
-当前代码分支和提交：
+当前代码分支和测试基线：
 
 - 分支：`main`
-- 当前提交：`a4b2bae`（包含固件文件名必须以大写 `BSL` 开头的修复；尚未作为正式发布提交）
+- 已测试工具代码提交：`a4b2bae`（包含固件文件名必须以大写 `BSL` 开头的修复）
+- 测试日志整理提交：`c7139a1`
+- 最终收尾提交：以本次收尾完成后的 Git HEAD 为准，正式交付时在 `RELEASE_MANIFEST.md` 中记录完整 SHA
 - 当前 Git 标签：无
 - 当前工具入口：`bslbatt-tool.py`
 - 当前 Product ID：`0xB021`
@@ -46,7 +48,6 @@
 - 已要求裸固件文件名和 zip 包内固件成员名以大写 `BSL` 开头，但仍未校验固件头、目标型号、版本、载荷长度、固件 CRC 或数字签名。
 - 当前计算的 CRC32 只用于日志，不用于判定固件是否损坏。
 - `locate_device()`、`erase_flash()` 和 `verify_firmware()` 目前是占位步骤，升级成功后没有主动读取并核实设备的新版本。
-- README 已使用 Product ID `0xB021`，但其中部分版本输出示例仍为旧的 `1.245`/`1.23`/`1.24` 格式，需要与当前设备输出的 `12.45`/`12.46` 规则统一并区分历史记录。
 - 已完成一次约 52% 进度处的 CAN 中断测试，但 START、10%、90%、FINISH 和升级后验证阶段的中断场景尚未覆盖。
 - 错误固件实测曾导致 BMS 死机，并需要通过 485 工具恢复；当前文件名前缀检查只能降低误刷风险，不能证明固件内容兼容。
 - 多模块测试因模块机制未定义且无可独立识别的多模块台架而阻塞。
@@ -135,7 +136,7 @@
 - [x] CAN 传输中收不到预期 ACK 时返回码 4，不输出 `Update successful`。
 - [x] 正常升级完成后可再次执行设备发现，并读取版本 `12.45` 或 `12.46` 进行人工确认。
 - [x] 已在已执行的正常、超时、损坏文件和文件名不兼容场景中确认 stdout 使用 Venus OS XML 消息，CAN 诊断写入日志文件。
-- [ ] 更新中英文 README，使 Product ID、参数、支持型号、版本显示规则、固件要求、退出码和已知限制与最终代码一致。
+- [x] 已更新中英文 README，使 Product ID、参数、支持型号、版本显示规则、固件要求、退出码和已知限制与当前代码一致。
 
 本轮程序功能和现场测试范围已经冻结，不再安排 BIN 内容深度校验、BMS 固件侧非法镜像校验、工具内自动版本校验或升级速度优化。相关能力边界作为已知限制写入交付文档。
 
@@ -375,7 +376,7 @@ git push github v1.0.0
 - [x] 单模块正常负载实测低于 400 秒；不对多模块或高负载场景作出承诺。
 - [ ] 电池停机时间及其与模块数量的关系已有实测数据。
 - [ ] 英文用户指南和测试报告完成评审。
-- [ ] README 与最终代码一致，stdout/XML 契约符合 Venus OS 要求。
+- [x] README 与当前代码一致，已执行场景的 stdout/XML 契约符合 Venus OS 要求。
 - [ ] 发布提交已完成代码评审，工作区无未提交变更。
 
 ## 8. 最终交付清单
@@ -461,11 +462,10 @@ BSLBATT-Powerline-VRM-delivery/
 
 ### 11.3 需要整理的交付物
 
-1. 更新 `README.md` 和 `README_CN.md` 中的版本显示示例及已知限制。
-2. 编写 `Powerline_supported_models_and_firmware_matrix.md`。
-3. 编写 `BSLBATT_Powerline_VRM_Remote_Firmware_Update_Guide_EN.md`。
-4. 编写 `BSLBATT_Powerline_Remote_Update_Test_Report_EN.md`。
-5. 编写固件 `RELEASE_NOTES.md` 和发布 `RELEASE_MANIFEST.md`。
-6. 整理并提交 01～09 日志和文档，记录最终提交完整 SHA。
-7. 确认公开仓库不包含固件、内部资料和临时测试文件后，创建并推送正式 Git 标签。
-8. 准备英文回复邮件，将 `BSL-V1.245.bin` 和 `BSL-V1.246.bin` 作为附件，并列出大小、SHA-256、代码标签、测试结论、耗时和已知限制。
+1. 编写 `Powerline_supported_models_and_firmware_matrix.md`。
+2. 编写 `BSLBATT_Powerline_VRM_Remote_Firmware_Update_Guide_EN.md`。
+3. 编写 `BSLBATT_Powerline_Remote_Update_Test_Report_EN.md`。
+4. 编写固件 `RELEASE_NOTES.md` 和发布 `RELEASE_MANIFEST.md`。
+5. 整理并提交 01～09 日志和文档，记录最终提交完整 SHA。
+6. 确认公开仓库不包含固件、内部资料和临时测试文件后，创建并推送正式 Git 标签。
+7. 准备英文回复邮件，将 `BSL-V1.245.bin` 和 `BSL-V1.246.bin` 作为附件，并列出大小、SHA-256、代码标签、测试结论、耗时和已知限制。

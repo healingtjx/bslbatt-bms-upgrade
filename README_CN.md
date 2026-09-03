@@ -17,6 +17,8 @@ XML；调试日志和设备错误详情输出到 stderr。
 - 支持远程升级的最低当前固件版本：`V1.245`。
 - 测试固件版本：`V1.245` 和 `V1.246`。
 - 支持 `V1.245 → V1.246` 升级，也支持 `V1.246 → V1.245` 降级。
+- 固件文件名使用 `V1.245`/`V1.246`，设备发现按 GX 设备显示规则输出
+  `12.45`/`12.46`。
 
 测试固件不通过公开 Git 仓库发布。`BSL-V1.245.bin` 和
 `BSL-V1.246.bin` 将随最终交付邮件作为附件发送给 Victron，并在邮件中提供以下
@@ -66,20 +68,20 @@ python3 bslbatt-tool.py --list -c can0
 按 Venus OS 调用方式升级选中设备：
 
 ```bash
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
 ```
 
 传入 `-f` 时会自动推断为升级模式，也可以显式加 `--update`：
 
 ```bash
-python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin
+python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
 ```
 
 开启调试日志：
 
 ```bash
 python3 bslbatt-tool.py -c can0 -d
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/firmware.bin -d
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin -d
 ```
 
 如果 Venus OS 镜像中的 `python` 指向 Python 3，也可以直接用 `python` 调用同样
@@ -108,7 +110,7 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 每个发现设备会输出一行 XML：
 
 ```xml
-<device serial="ABC123" version="1.245" description="BSLBATT BMS" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="ABC123" version="12.45" description="BSLBATT BMS" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 关键字段：
@@ -176,17 +178,31 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 <message type="normal">Update successful</message>
 ```
 
-当前状态：`locate_device()`、`erase_flash()` 和 `verify_firmware()` 仍是协议
-占位步骤。已通过 `BSL` 文件名前缀阻止明显的其他产品固件，但更完整的产品兼容性
-仍需要最终 BSLBATT 固件包格式，
-例如包头 magic、目标型号、目标版本、载荷长度、CRC 或签名。
+当前限制：`locate_device()`、`erase_flash()` 和 `verify_firmware()` 仍是协议
+占位步骤。`BSL` 文件名前缀可以阻止明显的其他产品固件，但不会校验裸 BIN 内容、
+目标型号、硬件版本、版本路径、CRC 或签名。升级时只能使用 BSLBATT 正式渠道提供
+的固件。
+
+## 已验证测试状态
+
+正式单设备测试记录位于 `logs/01_*.log` 至 `logs/09_*.log`：
+
+- `V1.245 → V1.246`、`V1.246 → V1.245` 和重复升级均成功，升级后设备发现
+  分别报告 `12.45` 或 `12.46`。
+- ZIP 内固件成员损坏时，在打开 CAN 前返回错误码 `9`。
+- 固件文件名不是大写 `BSL` 开头时，在打开 CAN 前返回错误码 `5`。
+- 约 52% 时断开 CAN，工具返回超时错误码 `4`；BMS 停留在 bootloader，必须
+  重启 BMS 后应用 CAN 通信才恢复。
+- 单设备正常总线负载下通过 400 秒测试：CAN 传输耗时 `373.688` 秒，保守完整
+  耗时上限约为 `385.714` 秒。
+- 多模块未测试：当前只确认一个逻辑设备 `can0/0x0`，模块升级机制尚未定义。
 
 ## GX 历史开发测试案例
 
-项目中保留了早期 GX 终端记录 `logs/upgrade_case.log`。该记录是从 1.23 升级到
-1.24 的开发测试，低于当前正式支持的最低远程升级版本 `V1.245`，因此只作为历史
-实现证据，不作为本次发布的正式验收结果。案例运行在 CCGX 上，当时 `can0` 已经
-处于 UP 状态：
+项目中保留了早期 GX 终端记录 `logs/upgrade_case.log`。其中的版本字符串保持历史
+显示规则原样。该记录是从 1.23 升级到 1.24 的开发测试，低于当前正式支持的最低
+远程升级版本 `V1.245`，因此只作为历史实现证据，不作为本次发布的正式验收结果。
+案例运行在 CCGX 上，当时 `can0` 已经处于 UP 状态：
 
 ```text
 3: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 100
@@ -285,10 +301,9 @@ python3 bslbatt-tool.py -c can0
 
 ## 最终交付检查项
 
-- 确认最终 BSLBATT 固件包格式，并补充真实型号和版本兼容性校验。
-- 确认 `locate_device()`、`erase_flash()` 和 `verify_firmware()` 在最终
-  BSLBATT 协议中是否应继续保持空操作。
-- 在 GX / Venus OS 设备和目标 BMS 上实测工具，并确认 stdout 只输出 XML。
-- 测试 CAN 中断、损坏/不兼容固件、支持的模块配置、故障恢复和 Venus OS
-  400 秒限制。
-- 仅在所有发布验收测试通过后创建并推送正式版本标签。
+- [x] 完成本轮约定的代码修改和单设备硬件测试。
+- [x] 整理 01～09 测试日志，并将多模块用例明确标记为阻塞/未测试。
+- [x] 将测试固件保存在已忽略的本地 `doc/firmware/` 目录，不提交到公开仓库。
+- [ ] 补齐 `doc/Victron远程固件升级交付任务计划.md` 中列出的产品资料和英文
+  交付文档。
+- [ ] 复核最终提交并创建、推送正式版本标签。

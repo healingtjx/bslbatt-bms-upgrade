@@ -27,7 +27,7 @@ EXIT_CAN_COMM_ERROR = 3
 EXIT_ARGUMENT_ERROR = 6
 
 MANUFACTURER_TYPE = "bslbatt"
-PRODUCT_ID = "TODO_PRODUCT_ID"
+PRODUCT_ID = "0xB021"
 DEVICE_DESCRIPTION = "BSLBATT BMS"
 DEFAULT_NODE_ID = 0
 
@@ -105,10 +105,10 @@ def read_le16(data, offset):
 
 
 def decode_battery_info_version(payload):
-    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 01 17 => v1.23。"""
+    """0x35F 的 BYTE2/BYTE3 表示固件版本，例如 02 03 12 45 => 12.45。"""
     if len(payload) < 4:
         return ""
-    return "v{}.{}".format(payload[2], payload[3])
+    return "{}.{}".format(payload[2], payload[3])
 
 
 def decode_victron_ascii(payload):

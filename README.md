@@ -10,6 +10,24 @@ The tool is designed for the Venus OS remote-toolbox contract. Stdout is
 reserved for Venus OS XML only. Debug logs and device error details are written
 to stderr.
 
+## Supported Product and Firmware
+
+- Supported model: `BSL 16-series (BSL 16串)` only.
+- Victron Product ID: `0xB021`.
+- CAN connection id: fixed at `0x0` by the current single-device protocol.
+- Minimum installed firmware version required for remote update: `V1.245`.
+- Test firmware versions: `V1.245` and `V1.246`.
+- Both `V1.245 -> V1.246` upgrade and `V1.246 -> V1.245` downgrade are supported.
+
+The test firmware binaries are not distributed through the public Git
+repository. `BSL-V1.245.bin` and `BSL-V1.246.bin` are delivered to Victron as
+attachments to the handover email, together with their SHA-256 values:
+
+| File | Size | SHA-256 |
+|------|-----:|--------|
+| `BSL-V1.245.bin` | 106,020 bytes | `8a7efc20671a1bbc5d6a0cf71c6141c6ba6e3a48a2fb61860b1c3cec6bff3f7e` |
+| `BSL-V1.246.bin` | 106,020 bytes | `ce8eb9428d4d91ac487aeabd2e9f93c3150ddf05333639c95ea2d18c9d083049` |
+
 ## Requirements
 
 - Python 3 on Victron GX / Venus OS.
@@ -94,7 +112,7 @@ without a conflicting identity.
 The list output for each discovered device is a single XML element:
 
 ```xml
-<device serial="ABC123" version="1.23" description="BSLBATT BMS" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="ABC123" version="1.245" description="BSLBATT BMS" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 Important fields:
@@ -116,8 +134,7 @@ Current device metadata parsing:
 - when version, serial, or model frames are not available, the tool still
   reports a BSLBATT candidate with fallback values such as
   `version="unknown"` and `serial="BSLBATT-can0"`;
-- the default product id is still `TODO_PRODUCT_ID` in `bslbatt-tool.py` and
-  must be replaced with the Victron-assigned Product ID before final delivery.
+- the Victron-assigned Product ID is `0xB021`.
 
 ## Firmware Update Flow
 
@@ -173,10 +190,13 @@ compatibility checks still need the final BSLBATT firmware package format, such
 as magic header, target model, target version, payload length, CRC, or
 signature.
 
-## Verified GX Case
+## Historical GX Development Case
 
-The project includes the GX terminal record in `logs/upgrade_case.log`. The
-successful case was run on a CCGX where `can0` was already up:
+The project includes an earlier GX terminal record in `logs/upgrade_case.log`.
+It records a development test from version 1.23 to 1.24, which is below the
+currently supported minimum remote-update version `V1.245`. It is retained as
+historical implementation evidence and is not the formal release acceptance
+test. The case was run on a CCGX where `can0` was already up:
 
 ```text
 3: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 100
@@ -191,7 +211,7 @@ python bslbatt-tool.py -c can0
 ```
 
 ```xml
-<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 The update command used the XML `connection-id` value as `-n` and the VRM cache
@@ -208,7 +228,7 @@ The update printed Venus XML progress from firmware checking through
 After the update, list mode reported the same device at firmware `1.24`:
 
 ```xml
-<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 Additional observed outputs:
@@ -217,7 +237,7 @@ If metadata frames are incomplete, list mode can still report a detected
 BSLBATT candidate:
 
 ```xml
-<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 ```bash
@@ -273,11 +293,12 @@ listed above.
 
 ## Final Delivery Checklist
 
-- Replace `TODO_PRODUCT_ID` in `bslbatt-tool.py` with the Victron-assigned
-  Product ID.
 - Confirm the final BSLBATT firmware package format and add real model/version
   compatibility validation.
 - Confirm whether `locate_device()`, `erase_flash()`, and `verify_firmware()`
   should remain no-op steps for the final BSLBATT protocol.
 - Run the tool on a GX / Venus OS device with the target BMS and verify
   XML-only stdout.
+- Test CAN disconnection, corrupt/incompatible firmware, supported module
+  configurations, recovery behavior, and the Venus OS 400-second limit.
+- Create and push the release tag only after all release acceptance tests pass.

@@ -9,6 +9,24 @@
 该工具面向 Venus OS remote-toolbox 调用契约。stdout 只输出 Venus OS 读取的
 XML；调试日志和设备错误详情输出到 stderr。
 
+## 支持产品与固件
+
+- 支持型号：仅支持 `BSL 16串`。
+- Victron Product ID：`0xB021`。
+- CAN connection-id：当前单设备协议固定为 `0x0`。
+- 支持远程升级的最低当前固件版本：`V1.245`。
+- 测试固件版本：`V1.245` 和 `V1.246`。
+- 支持 `V1.245 → V1.246` 升级，也支持 `V1.246 → V1.245` 降级。
+
+测试固件不通过公开 Git 仓库发布。`BSL-V1.245.bin` 和
+`BSL-V1.246.bin` 将随最终交付邮件作为附件发送给 Victron，并在邮件中提供以下
+SHA-256：
+
+| 文件 | 大小 | SHA-256 |
+|------|-----:|--------|
+| `BSL-V1.245.bin` | 106,020 bytes | `8a7efc20671a1bbc5d6a0cf71c6141c6ba6e3a48a2fb61860b1c3cec6bff3f7e` |
+| `BSL-V1.246.bin` | 106,020 bytes | `ce8eb9428d4d91ac487aeabd2e9f93c3150ddf05333639c95ea2d18c9d083049` |
+
 ## 运行要求
 
 - Victron GX / Venus OS 上的 Python 3。
@@ -90,7 +108,7 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 每个发现设备会输出一行 XML：
 
 ```xml
-<device serial="ABC123" version="1.23" description="BSLBATT BMS" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="ABC123" version="1.245" description="BSLBATT BMS" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 关键字段：
@@ -109,8 +127,7 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 - 描述优先使用设备名称，其次使用厂商、系列或型号字段；
 - 当版本、序列号或型号帧不完整时，工具仍会输出 BSLBATT 候选设备，并使用
   `version="unknown"`、`serial="BSLBATT-can0"` 这类兜底值；
-- `bslbatt-tool.py` 中的默认 Product ID 仍是 `TODO_PRODUCT_ID`，最终交付前
-  必须替换为 Victron 分配的 Product ID。
+- Victron 分配的 Product ID 为 `0xB021`。
 
 ## 固件升级流程
 
@@ -162,10 +179,12 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 占位步骤。实际 CAN 传输流程已实现，但产品兼容性仍需要最终 BSLBATT 固件包格式，
 例如包头 magic、目标型号、目标版本、载荷长度、CRC 或签名。
 
-## GX 实测案例
+## GX 历史开发测试案例
 
-项目中保留了 GX 终端记录 `logs/upgrade_case.log`。成功案例运行在 CCGX 上，
-当时 `can0` 已经处于 UP 状态：
+项目中保留了早期 GX 终端记录 `logs/upgrade_case.log`。该记录是从 1.23 升级到
+1.24 的开发测试，低于当前正式支持的最低远程升级版本 `V1.245`，因此只作为历史
+实现证据，不作为本次发布的正式验收结果。案例运行在 CCGX 上，当时 `can0` 已经
+处于 UP 状态：
 
 ```text
 3: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 100
@@ -180,7 +199,7 @@ python bslbatt-tool.py -c can0
 ```
 
 ```xml
-<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 升级命令使用列表 XML 中的 `connection-id` 作为 `-n`，使用 VRM 缓存目录中的固件
@@ -196,7 +215,7 @@ XML。写入阶段会输出 `21` 到 `90` 的递增进度。
 升级后，列表模式报告同一设备固件版本变为 `1.24`：
 
 ```xml
-<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 其他实测输出：
@@ -204,7 +223,7 @@ XML。写入阶段会输出 `21` 到 `90` 的递增进度。
 当元数据帧不完整时，列表模式仍可以报告已检测到的 BSLBATT 候选设备：
 
 ```xml
-<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="TODO_PRODUCT_ID" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
+<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
 ```
 
 固件路径不存在时：
@@ -264,8 +283,10 @@ python3 bslbatt-tool.py -c can0
 
 ## 最终交付检查项
 
-- 将 `bslbatt-tool.py` 中的 `TODO_PRODUCT_ID` 替换为 Victron 分配的 Product ID。
 - 确认最终 BSLBATT 固件包格式，并补充真实型号和版本兼容性校验。
 - 确认 `locate_device()`、`erase_flash()` 和 `verify_firmware()` 在最终
   BSLBATT 协议中是否应继续保持空操作。
 - 在 GX / Venus OS 设备和目标 BMS 上实测工具，并确认 stdout 只输出 XML。
+- 测试 CAN 中断、损坏/不兼容固件、支持的模块配置、故障恢复和 Venus OS
+  400 秒限制。
+- 仅在所有发布验收测试通过后创建并推送正式版本标签。

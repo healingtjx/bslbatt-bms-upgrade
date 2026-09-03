@@ -1,0 +1,67 @@
+Test date: 2026-09-03
+Tester: tjx
+Battery model: BSL 16-series (BSL 16串)
+Module count: 1 (one device detected on can0 before entering upgrade mode)
+Source firmware: v12.46 (tool output: 12.46)
+Target firmware: v12.45
+Firmware filename: BSL-V1.245.bin
+Test scenario: Disconnect CAN cable during firmware transfer
+Disconnect point / progress: CAN cable manually disconnected after XML progress 55%; last acknowledged transfer progress was 52% (7950/15146 frames, 55650/106020 firmware bytes)
+Start time: 2026-09-03 05:52:01.289 +0000 (CAN log START; shell marker was 05:51:35)
+End time: approximately 2026-09-03 06:02:21.555 +0000 (last DATA_ACK at 06:02:11.555 followed by the 10-second ACK timeout)
+Total duration: approximately 620.266 seconds from CAN log START to the expected timeout deadline
+Tool command: python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.245.bin --can-log /tmp/04_fault_can_disconnect_can.log
+Tool output:
+<message type="normal">Checking firmware</message>
+<progress level="0" />
+<message type="normal">Locating device</message>
+<progress level="5" />
+<message type="normal">Entering bootloader</message>
+<progress level="10" />
+<message type="normal">Erasing device</message>
+<progress level="20" />
+<message type="normal">Writing firmware</message>
+<progress level="21" />
+<progress level="22" />
+<progress level="23" />
+<progress level="24" />
+<progress level="25" />
+<progress level="26" />
+<progress level="27" />
+<progress level="28" />
+<progress level="29" />
+<progress level="30" />
+<progress level="31" />
+<progress level="32" />
+<progress level="33" />
+<progress level="34" />
+<progress level="35" />
+<progress level="36" />
+<progress level="37" />
+<progress level="38" />
+<progress level="39" />
+<progress level="40" />
+<progress level="41" />
+<progress level="42" />
+<progress level="43" />
+<progress level="44" />
+<progress level="45" />
+<progress level="46" />
+<progress level="47" />
+<progress level="48" />
+<progress level="49" />
+<progress level="50" />
+<progress level="51" />
+<progress level="52" />
+<progress level="53" />
+<progress level="54" />
+<progress level="55" />
+<progress level="56" />
+<message type="normal">Device response timeout</message>
+Return code: 4
+Firmware version after test: v12.46 after reconnecting CAN and restarting the BMS (tool output: 12.46; verification return code 0 at 2026-09-03 06:05:59 +0000)
+Battery state after failure: Not discoverable by the device-list command after CAN was reconnected; the BMS remained in bootloader/upgrade state until restarted
+Recovery required: Yes, BMS restart required
+Recovery procedure and result: Reconnected the CAN cable, restarted the BMS, waited 5 seconds, then reran device discovery. Communication recovered and the original v12.46 application was reported; the partial v12.45 transfer was not activated.
+Result: PASS
+Notes: Firmware SHA-256 was previously verified as 8a7efc20671a1bbc5d6a0cf71c6141c6ba6e3a48a2fb61860b1c3cec6bff3f7e. CAN log START was epoch 1788414721.289. The last five valid DATA_ACK frames acknowledged frame counts 7910, 7920, 7930, 7940, and 7950; the final ACK was epoch 1788415331.555. No further DATA_ACK was received after the CAN cable was disconnected, and the tool correctly returned timeout code 4 instead of reporting success. Device discovery returning no XML output before the BMS restart is expected for this BMS bootloader behavior.

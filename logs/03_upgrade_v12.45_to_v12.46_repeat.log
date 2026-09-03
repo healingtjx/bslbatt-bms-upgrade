@@ -1,0 +1,102 @@
+Test date: 2026-09-03
+Tester: tjx
+Battery model: BSL 16-series (BSL 16串)
+Module count: 1 (one device detected on can0)
+Source firmware: v12.45 (tool output: 12.45)
+Target firmware: v12.46 (tool output: 12.46)
+Firmware filename: BSL-V1.246.bin
+Test scenario: Repeated normal firmware upgrade after downgrade
+Start time: 2026-09-03 03:46:22.932 +0000 (CAN log START)
+End time: 2026-09-03 03:52:27.014 +0000 (CAN log FINISH_ACK)
+Total duration: 364.082 seconds measured by the CAN log
+Tool command: python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin --can-log /tmp/repeat_upgrade_v12.45_to_v12.46_can.log
+Tool output:
+<message type="normal">Checking firmware</message>
+<progress level="0" />
+<message type="normal">Locating device</message>
+<progress level="5" />
+<message type="normal">Entering bootloader</message>
+<progress level="10" />
+<message type="normal">Erasing device</message>
+<progress level="20" />
+<message type="normal">Writing firmware</message>
+<progress level="21" />
+<progress level="22" />
+<progress level="23" />
+<progress level="24" />
+<progress level="25" />
+<progress level="26" />
+<progress level="27" />
+<progress level="28" />
+<progress level="29" />
+<progress level="30" />
+<progress level="31" />
+<progress level="32" />
+<progress level="33" />
+<progress level="34" />
+<progress level="35" />
+<progress level="36" />
+<progress level="37" />
+<progress level="38" />
+<progress level="39" />
+<progress level="40" />
+<progress level="41" />
+<progress level="42" />
+<progress level="43" />
+<progress level="44" />
+<progress level="45" />
+<progress level="46" />
+<progress level="47" />
+<progress level="48" />
+<progress level="49" />
+<progress level="50" />
+<progress level="51" />
+<progress level="52" />
+<progress level="53" />
+<progress level="54" />
+<progress level="55" />
+<progress level="56" />
+<progress level="57" />
+<progress level="58" />
+<progress level="59" />
+<progress level="60" />
+<progress level="61" />
+<progress level="62" />
+<progress level="63" />
+<progress level="64" />
+<progress level="65" />
+<progress level="66" />
+<progress level="67" />
+<progress level="68" />
+<progress level="69" />
+<progress level="70" />
+<progress level="71" />
+<progress level="72" />
+<progress level="73" />
+<progress level="74" />
+<progress level="75" />
+<progress level="76" />
+<progress level="77" />
+<progress level="78" />
+<progress level="79" />
+<progress level="80" />
+<progress level="81" />
+<progress level="82" />
+<progress level="83" />
+<progress level="84" />
+<progress level="85" />
+<progress level="86" />
+<progress level="87" />
+<progress level="88" />
+<progress level="89" />
+<progress level="90" />
+<message type="normal">Verifying firmware</message>
+<progress level="98" />
+<message type="normal">Starting application</message>
+<progress level="100" />
+<message type="normal">Update successful</message>
+Return code: 0
+Firmware version after test: v12.46 (tool output: 12.46; verification return code 0)
+Recovery required: No
+Result: PASS
+Notes: Target firmware SHA-256 ce8eb9428d4d91ac487aeabd2e9f93c3150ddf05333639c95ea2d18c9d083049 was verified earlier in the same test session. CAN log recorded START at epoch 1788407182.932 and FINISH_ACK at epoch 1788407547.014. The repeated upgrade after downgrade completed below the Venus OS 400-second target.

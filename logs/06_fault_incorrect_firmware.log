@@ -1,0 +1,39 @@
+Test date: 2026-09-03
+Tester: tjx
+Battery model: BSL 16-series (BSL 16串)
+Module count: 1 (one device on can0)
+Source firmware: v12.46 (verified before the test; baseline return code 0)
+Incorrect firmware filename: OTHER-BMS-unsupported.bin
+Incorrect firmware description: Synthetic non-BSL payload containing the marker OTHER-BMS-UNSUPPORTED-FIRMWARE; size 31 bytes; SHA-256 1d5a43857fefdd41d3ff766bb0483181cc89c08e1c3f99b5db692f757447c0f8
+Test scenario: Upload firmware that does not match the supported battery
+Start time: 2026-09-03 06:22:16 +0000 (shell marker); CAN START at epoch 1788416551.664
+End time: 2026-09-03 06:22:46 +0000 (shell marker); CAN FINISH_ACK at epoch 1788416551.971
+Total duration: 23 seconds reported by shell epoch measurement, including command-entry delay; CAN protocol duration was 0.307 seconds
+Tool command: python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/OTHER-BMS-unsupported.bin --can-log /tmp/06_fault_incorrect_firmware_can.log
+Tool output:
+<message type="normal">Checking firmware</message>
+<progress level="0" />
+<message type="normal">Locating device</message>
+<progress level="5" />
+<message type="normal">Entering bootloader</message>
+<progress level="10" />
+<message type="normal">Erasing device</message>
+<progress level="20" />
+<message type="normal">Writing firmware</message>
+<progress level="34" />
+<progress level="48" />
+<progress level="62" />
+<progress level="76" />
+<progress level="89" />
+<progress level="90" />
+<message type="normal">Verifying firmware</message>
+<progress level="98" />
+<message type="normal">Starting application</message>
+<progress level="100" />
+<message type="normal">Update successful</message>
+Return code: 0
+Firmware version after test: Initially unavailable after the destructive test; restored to v12.45 through external 485 flashing, then verified through can0
+Battery state after failure: BMS hung after the bootloader acknowledged and started the unsupported 31-byte image; the device was no longer discoverable or recoverable through normal CAN communication
+Recovery required: Yes; successfully recovered through the BMS 485 flashing tool using valid v12.45 firmware
+Result: FAIL (original destructive test); PASS (filename-prefix fix regression test)
+Notes: The original destructive 31-byte unsupported file SHA-256 was 1d5a43857fefdd41d3ff766bb0483181cc89c08e1c3f99b5db692f757447c0f8. The host calculated size=31, padded transfer_size=35, frame_count=5, and crc32=D89550E7. The BMS returned START_ACK for image_size=35/frame_count=5, DATA_ACK for all 5 frames, and an all-FF FINISH_ACK. The old tool therefore returned 0 and falsely reported Update successful for an incompatible image. The BMS then hung and required external 485 reflashing. Both host-side preflight validation and BMS-side image validation failed to prevent activation. Follow-up fix: the merged and standalone update tools now require raw firmware filenames and zip-contained firmware payload filenames to start with uppercase BSL. For the safe GX regression, OTHER-BMS-unsupported.bin was replaced with a byte-identical copy of valid BSL-V1.245.bin; both files had SHA-256 8a7efc20671a1bbc5d6a0cf71c6141c6ba6e3a48a2fb61860b1c3cec6bff3f7e. The updated GX tool returned Firmware is not compatible with code 5 and did not create a CAN log, proving rejection occurred before CAN was opened. Filename filtering reduces immediate risk but does not replace validation of official firmware magic, target model, hardware revision, supported version path, payload length, CRC/signature, or post-update device verification.

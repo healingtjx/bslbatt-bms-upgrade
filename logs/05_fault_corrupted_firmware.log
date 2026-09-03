@@ -1,0 +1,22 @@
+Test date: 2026-09-03
+Tester: tjx
+Battery model: BSL 16-series (BSL 16串)
+Module count: 1 (one device detected on can0)
+Source firmware: v12.46 (tool output: 12.46 after the test)
+Target firmware: v12.45 package used only for pre-update corruption validation
+Original firmware filename: BSL-V1.245.bin
+Corrupted firmware filename: BSL-V1.245-corrupted.zip
+Corruption method: Created a ZIP_STORED archive containing BSL-V1.245.bin, then flipped one byte at the midpoint of the stored firmware data without updating the ZIP CRC
+Test scenario: Upload a deliberately corrupted firmware file
+Start time: 2026-09-03 06:12:29 +0000
+End time: 2026-09-03 06:13:16 +0000
+Total duration: Shell epoch measurement reported 39 seconds; this includes manual delay while entering commands and is not the firmware-validation execution time
+Tool command: python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.245-corrupted.zip --can-log /tmp/05_fault_corrupted_can.log
+Tool output:
+<message type="normal">Firmware file error</message>
+Return code: 9
+Firmware version after test: v12.46 (tool output: 12.46; verification return code 0)
+Battery state after failure: Normal; the device remained discoverable on can0
+Recovery required: No
+Result: PASS
+Notes: Corrupted ZIP SHA-256 was verified on the GX as 60d575bdee5a701fb748b54bd8308e836305af4a29dfb3c76f6715367670805c. The original BSL-V1.245.bin SHA-256 is 8a7efc20671a1bbc5d6a0cf71c6141c6ba6e3a48a2fb61860b1c3cec6bff3f7e. The archive remained structurally recognizable as ZIP, but its embedded BSL-V1.245.bin failed ZIP CRC validation. The tool rejected the package before opening CAN or entering the BMS bootloader, returned the expected file-error code 9, and did not change the running firmware.

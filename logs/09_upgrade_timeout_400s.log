@@ -1,0 +1,19 @@
+Test date: 2026-09-03
+Tester: tjx
+Battery model: BSL 16-series (BSL 16串)
+Module count: 1
+Source firmware: v12.45
+Target firmware: v12.46
+Firmware filename: BSL-V1.246.bin
+Test scenario: Verify the complete update finishes within the Venus OS 400-second timeout
+Start time: 2026-09-03 07:32:53 +0000 (shell start marker); CAN START at epoch 1788420785.026
+End time: approximately 2026-09-03 07:39:18.714 +0000 (CAN FINISH_ACK; the tool reports success immediately afterward)
+Total duration: approximately 385.714 seconds from the shell start marker to FINISH_ACK; CAN protocol duration 373.688 seconds
+400-second limit met: YES
+Tool command: python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin --can-log /tmp/09_upgrade_timeout_400s_can.log
+Tool output: Checking firmware -> Locating device -> Entering bootloader -> Erasing device -> Writing firmware (21%-90%) -> Verifying firmware (98%) -> Starting application (100%) -> Update successful
+Return code: 0
+Firmware version after test: v12.46 (tool output: 12.46; verification return code 0)
+Recovery required: No
+Result: PASS
+Notes: Firmware SHA-256 ce8eb9428d4d91ac487aeabd2e9f93c3150ddf05333639c95ea2d18c9d083049 was verified before the test. The CAN log contains 3,882 lines and records START at epoch 1788420785.026 and FINISH_ACK at epoch 1788421158.714, giving a CAN protocol duration of 373.688 seconds. The tool emits progress 100% and Update successful immediately after receiving FINISH_ACK, and the device was subsequently discovered as v12.46. The separately printed shell duration of 516 seconds is not the process duration: END_EPOCH was entered after the command had already returned, adding approximately 130 seconds of terminal-operation delay. Even using the earlier shell start marker and the FINISH_ACK timestamp gives an upper-bound completion time of approximately 385.714 seconds, which is below 400 seconds. The remaining margin is approximately 14.286 seconds under this conservative bound, so the test passes but timeout margin is limited.

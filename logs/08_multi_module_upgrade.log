@@ -1,0 +1,23 @@
+Test date: 2026-09-03
+Tester: tjx
+Battery model: BSL 16-series (BSL 16串)
+Module count: Only one logical BSLBATT device was confirmed in the available test environment; multiple physical modules were not confirmed
+Module addresses / identifiers: can0 / node 0x0 only
+Source firmware: Not applicable
+Target firmware: Not applicable
+Firmware filename: Not applicable
+Test scenario: Firmware update with multiple battery modules connected
+Modules expected to update: Not confirmed; the product/protocol definition does not state whether the master module broadcasts the firmware to slave modules or each module must be addressed separately
+Modules actually updated: Not tested
+Start time: Not applicable
+End time: Not applicable
+Total duration: Not applicable
+Per-module timing, if applicable: Not available
+Tool command: Not executed
+Tool output: Not applicable
+Return code: Not applicable
+Firmware versions after test: Not available
+Downtime observed: Not applicable
+Timing relationship to module count: Cannot be established without a supported multi-module configuration and a defined module-selection/update mechanism
+Result: BLOCKED / NOT TESTED
+Notes: The available GX discovery result exposes one logical device on can0 with connection-id/node 0x0. The current tool accepts only node 0x0 and identifies one CAN bus as one logical BSLBATT device; it cannot enumerate or select individual battery modules. The BSL 16-series (16串) description refers to the battery cell-series configuration and does not prove that multiple BMS modules are connected. No verified hardware setup with at least two independently identifiable modules was available, and the BMS protocol behavior for a multi-module system has not been confirmed: it is unknown whether only the master is updated, the master broadcasts firmware to slaves, or every module requires a separate update. Executing one ordinary node-0 upgrade would therefore not provide valid evidence that all modules were updated. This case must remain blocked until the battery/BMS team defines the multi-module mechanism and supplies a test setup with at least two modules whose versions can be independently checked before and after the update.

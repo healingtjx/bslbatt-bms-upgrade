@@ -140,7 +140,10 @@ Current device metadata parsing:
 
 Update mode validates all local inputs before opening CAN. Firmware paths must
 be absolute. If the file is a zip package, the tool runs the zip CRC check and
-requires exactly one `.bin`, `.fw`, or `.img` payload inside the package.
+requires exactly one `.bin`, `.fw`, or `.img` payload inside the package. Every
+raw firmware filename, and the firmware payload filename inside a zip package,
+must start with uppercase `BSL`. A mismatch returns firmware error code `5`
+before CAN is opened.
 
 The implemented BSLBATT CAN upgrade flow is:
 
@@ -185,10 +188,10 @@ Progress XML emitted during update, abridged:
 ```
 
 Current status: `locate_device()`, `erase_flash()`, and `verify_firmware()` are
-protocol placeholders. The actual transfer is implemented, but product
-compatibility checks still need the final BSLBATT firmware package format, such
-as magic header, target model, target version, payload length, CRC, or
-signature.
+protocol placeholders. The `BSL` filename-prefix check blocks obvious firmware
+for other products, but complete product compatibility checks still need the
+final BSLBATT firmware package format, such as magic header, target model,
+target version, payload length, CRC, or signature.
 
 ## Historical GX Development Case
 

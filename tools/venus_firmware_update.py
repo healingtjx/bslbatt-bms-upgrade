@@ -42,6 +42,7 @@ EXIT_MEMORY_ERROR = 8
 EXIT_FILE_ERROR = 9
 EXIT_VERIFY_FAILED = 10
 EXIT_VERIFY_TIMEOUT = 11
+FIRMWARE_FILENAME_PREFIX = "BSL"
 
 # Linux SocketCAN 原始 CAN 帧结构：
 #   can_id: 4 字节
@@ -264,6 +265,15 @@ def unpack_can_frame(raw_frame):
     }
 
 
+def validate_bslbatt_firmware_filename(filename):
+    """固件载荷文件名必须以 BSL 开头，避免把其他产品的固件写入 BMS。"""
+    basename = os.path.basename(filename)
+    if not basename.startswith(FIRMWARE_FILENAME_PREFIX):
+        raise FirmwareError(
+            "firmware filename must start with {}: {}".format(FIRMWARE_FILENAME_PREFIX, basename)
+        )
+
+
 def read_firmware_from_zip(path):
     """从 zip 固件包中读取唯一的 .bin/.fw/.img 文件，并先做 zip CRC 检查。"""
     try:
@@ -285,6 +295,7 @@ def read_firmware_from_zip(path):
             if len(candidates) != 1:
                 raise FirmwareError("zip package must contain exactly one .bin/.fw/.img firmware file")
 
+            validate_bslbatt_firmware_filename(candidates[0].filename)
             return archive.read(candidates[0])
     except zipfile.BadZipFile as exc:
         raise OSError("invalid zip file: {}".format(exc))
@@ -297,6 +308,7 @@ def read_firmware(path):
     if zipfile.is_zipfile(path):
         data = read_firmware_from_zip(path)
     else:
+        validate_bslbatt_firmware_filename(path)
         with open(path, "rb") as firmware_file:
             data = firmware_file.read()
     if not data:

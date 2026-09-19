@@ -1,0 +1,260 @@
+"""Standalone Venus updater regression tests, without CAN hardware."""
+import contextlib
+import importlib.util
+import io
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+import xml.etree.ElementTree as ET
+import zipfile
+
+from test_pc_tools import Bus, Clock, Log, ack, session
+import pc_update as reference
+
+spec = importlib.util.spec_from_file_location('bslbatt_tool', Path(__file__).resolve().parents[1] / 'bslbatt-tool.py')
+u = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(u)
+
+
+class ProtocolTests(unittest.TestCase):
+    def make_session(self, responses=None):
+        original, bus, log, clock = session(reference.parser().parse_args([]), responses)
+        updater = u.BslbattFirmwareUpdater(bus, SimpleNamespace(can='can0', **u.UPGRADE_CONFIG), log, clock, clock.sleep)
+        return updater, bus, log, clock
+
+    def test_wire_and_timing_match_validated_script(self):
+        for size in (1, 127, 128, 129, 256, 300):
+            with self.subTest(size=size), contextlib.redirect_stdout(io.StringIO()) as output:
+                data = bytes(i % 256 for i in range(size))
+                original, old_bus, old_log, old_clock = session(reference.parser().parse_args([]))
+                original.run(data)
+                updater, bus, log, clock = self.make_session()
+                self.assertEqual(updater.run(data), 'status_query_sent')
+                self.assertEqual(bus.sent, old_bus.sent)
+                self.assertEqual(clock.now, old_clock.now)
+                self.assertEqual([(f['id'], f['monotonic']) for f in log.frames],
+                                 [(f['id'], f['monotonic']) for f in old_log.frames])
+                self.assertTrue(all(len(data) == 8 for _, data in bus.sent))
+                self.assertEqual(sum(identifier == 0x46D0 for identifier, _ in bus.sent), 1)
+                self.assertIn('device final status unconfirmed', output.getvalue())
+                ET.fromstring('<output>' + output.getvalue() + '</output>')
+
+    def test_all_protocol_errors_stop_before_query(self):
+        for request, response, code in ((0x4610, 0x4621, 1), (0x4670, 0x4681, 2),
+                                       (0x4670, 0x4681, 3), (0x4690, 0x46A1, 8),
+                                       (0x46B0, 0x46C1, 9)):
+            with self.subTest(code=code), contextlib.redirect_stdout(io.StringIO()):
+                updater, bus, _, _ = self.make_session()
+                bus.responses[request] = [ack(response, [code])]
+                with self.assertRaises(u.ProtocolError) as error:
+                    updater.run(bytes(129))
+                self.assertEqual(error.exception.code, code)
+                self.assertEqual(sum(i == 0x4610 for i, _ in bus.sent), 1)
+                self.assertNotIn(0x46D0, [i for i, _ in bus.sent])
+
+    def test_timeout_ignores_invalid_frames_without_extending_deadline(self):
+        updater, bus, _, clock = self.make_session()
+        bus.responses[0x4610] = [ack(0x4621, [0xA1, 0, 128], extended=False),
+                                 ack(0x4621, [0xA1, 0, 128, 1, 0, 0, 0, 0])]
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(TimeoutError):
+            updater.run(b'x')
+        self.assertAlmostEqual(clock.now, 30)
+        self.assertEqual(len(bus.sent), 1)
+
+    def test_query_send_failure_is_not_success(self):
+        updater, bus, _, _ = self.make_session()
+        original_send = bus.send
+        def send(identifier, data):
+            if identifier == 0x46D0:
+                raise OSError('query send failed')
+            original_send(identifier, data)
+        bus.send = send
+        with contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(OSError):
+            updater.run(b'x')
+        self.assertNotIn('level="100"', output.getvalue())
+        self.assertNotIn('flow completed', output.getvalue())
+
+    def test_size_limits_and_crc(self):
+        self.assertEqual(u.crc16(b'123456789'), 0x4B37)
+        u.validate_bslbatt_firmware(bytes(65535 * 128))
+        for data in (b'', bytes(65535 * 128 + 1)):
+            with self.assertRaises(u.FirmwareError):
+                u.validate_bslbatt_firmware(data)
+
+    def test_disabled_frame_logging_handles_busy_bus(self):
+        for debug_enabled in (False, True):
+            with self.subTest(debug=debug_enabled):
+                updater, bus, _, clock = self.make_session()
+                updater.log = u.Logger('', debug_enabled)
+                bus.queue.append(ack(0x355, [50, 0], extended=False))
+                bus.responses[0x4670] = [ack(0x355, [50, 0], extended=False)] * 4200 + [
+                    ack(0x4681, [0xA2])]
+
+                def recv(timeout):
+                    clock.sleep(min(timeout, 0.001))
+                    if bus.queue:
+                        return bus.queue.pop(0)
+                    clock.sleep(max(0, timeout - 0.001))
+                    return None
+
+                bus.recv = recv
+                with patch.object(updater.log, 'frame_line') as format_frame, \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(updater.run(b'x'), 'status_query_sent')
+                    format_frame.assert_not_called()
+                self.assertIsNone(updater.events)
+
+
+class IntegrationTests(unittest.TestCase):
+    def test_list_receives_frames_with_and_without_debug(self):
+        for debug_enabled in (False, True):
+            args = u.build_parser().parse_args(
+                ['--list', '-c', 'can0', '--timeout', '5'] +
+                (['--debug'] if debug_enabled else []))
+            clock = Clock()
+            with self.subTest(debug=debug_enabled), patch.object(u, 'open_can') as open_can, \
+                    patch.object(u.time, 'monotonic', clock), \
+                    patch.object(u.select, 'select') as select, \
+                    contextlib.redirect_stdout(io.StringIO()) as output, \
+                    contextlib.redirect_stderr(io.StringIO()) as errors:
+                sock = open_can.return_value
+                sock.recv.return_value = u.FRAME.pack(u.CAN_ID_MANUFACTURER, 8, b'BSLBATT\x00')
+                def readable(*args):
+                    clock.sleep(1)
+                    return [sock], [], []
+                select.side_effect = readable
+                self.assertEqual(u.list_devices(args), 0)
+                device = ET.fromstring(output.getvalue())
+                self.assertEqual(device.tag, 'device')
+                self.assertEqual(device.get('connection'), 'socketcan:can0/0x0')
+                self.assertEqual(device.get('type'), 'bslbatt')
+                sock.close.assert_called_once()
+                if debug_enabled:
+                    self.assertIn('data=42 53 4C 42 41 54 54 00', errors.getvalue())
+                else:
+                    self.assertEqual(errors.getvalue(), '')
+
+    def args(self, path):
+        return u.build_parser().parse_args(['-c', 'can0', '-n', '0x0', '-f', str(path), '--can-log', ''])
+
+    def test_single_attempt_exit_codes_and_cleanup(self):
+        cases = [(None, 0), (TimeoutError('timeout'), 4), (OSError('CAN error'), 3),
+                 (u.ProtocolError('CRC error', 8), 10), (u.ProtocolError('write error', 4), 8),
+                 (u.ProtocolError('size error', 1), 5), (u.ProtocolError('sequence error', 19), 1),
+                 (KeyboardInterrupt(), 130)]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'Ptest.bin'
+            path.write_bytes(b'abc')
+            for error, code in cases:
+                with self.subTest(code=code), patch.object(u, 'SocketCan') as factory, \
+                        patch.object(u.BslbattFirmwareUpdater, 'run', side_effect=error) as run, \
+                        contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(u.update(self.args(path)), code)
+                    factory.assert_called_once_with('can0')
+                    factory.return_value.__enter__.assert_called_once()
+                    factory.return_value.__exit__.assert_called_once()
+                    run.assert_called_once_with(b'abc')
+                    ET.fromstring('<output>' + output.getvalue() + '</output>')
+
+    def test_can_init_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'Ptest.bin'
+            path.write_bytes(b'x')
+            with patch.object(u, 'SocketCan') as factory, contextlib.redirect_stdout(io.StringIO()):
+                factory.return_value.__enter__.side_effect = OSError('bind failed')
+                self.assertEqual(u.update(self.args(path)), 2)
+                factory.return_value.__exit__.assert_called_once()
+
+    def test_protocol_errors_use_english_public_messages_and_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'firmware.bin'
+            path.write_bytes(b'abc')
+            for status in u.CODES:
+                if status in (0xA1, 0xA2, 0xA3, 10, 11, 12, 13, 16):
+                    continue
+                expected = (10, 'Verification failed') if status in (2, 8) else (
+                    (8, 'Device memory error') if status in (4, 6, 20) else (
+                        (5, 'Firmware error') if status in (1, 5, 7, 9, 18) else
+                        (1, 'Update failed')))
+                detail = 'BMS 0x{:02X}: {}'.format(status, u.CODES[status])
+                args = self.args(path)
+                args.can_log = str(Path(directory) / 'can.log')
+                with self.subTest(status=status), patch.object(u, 'SocketCan'), \
+                        patch.object(u.BslbattFirmwareUpdater, 'run',
+                                     side_effect=u.ProtocolError(detail, status)), \
+                        contextlib.redirect_stdout(io.StringIO()) as output, \
+                        contextlib.redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(u.update(args), expected[0])
+                    message = ET.fromstring(output.getvalue())
+                    self.assertEqual(message.attrib, {'type': 'normal'})
+                    self.assertEqual(message.text, expected[1])
+                    self.assertIn(detail, errors.getvalue())
+                    self.assertIn(detail, Path(args.can_log).read_text())
+                    for text in (output.getvalue(), errors.getvalue(), Path(args.can_log).read_text()):
+                        self.assertTrue(text.isascii(), text)
+
+    def test_can_status_descriptions_are_english(self):
+        for identifier, statuses in u.VALID_CODES.items():
+            for status in statuses | {0xFF}:
+                payload = bytes([status])
+                if (identifier, status) in ((0x4621, 0xA1), (0x46A1, 0xA3)):
+                    payload += b'\x00\x80'
+                self.assertTrue(u.decode(identifier, payload).isascii())
+
+    def test_arbitrary_filenames_and_zip_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ('Ptest.bin', 'BSLtest.bin', 'ptest.bin'):
+                raw = Path(directory) / name
+                raw.write_bytes(b'abc')
+                archive = Path(directory) / 'upload.zip'
+                with zipfile.ZipFile(archive, 'w') as stream:
+                    stream.writestr('firmware/' + name, b'abc')
+                for path in (raw, archive):
+                    self.assertEqual(u.read_firmware(str(path)), b'abc')
+            with zipfile.ZipFile(archive, 'w') as stream:
+                stream.writestr('Pone.bin', b'a')
+                stream.writestr('Ptwo.bin', b'b')
+            with self.assertRaises(u.FirmwareError):
+                u.read_firmware(str(archive))
+
+    def test_vrm_hash_filename_reaches_updater(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'aace1cf66d80316eca7bb14c87182581_aace1cf66d80316eca7bb14c87182581'
+            path.write_bytes(b'firmware')
+            args = u.build_parser().parse_args([
+                '-u', '-c', 'socketcan:can0/0x0', '-f', str(path), '--can-log', ''])
+            with patch.object(u, 'SocketCan') as factory, \
+                    patch.object(u.BslbattFirmwareUpdater, 'run') as run, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(u.update(args), 0)
+                factory.assert_called_once_with('can0')
+                run.assert_called_once_with(b'firmware')
+
+    def test_legacy_connection_and_inferred_modes(self):
+        args = u.build_parser().parse_args(['--connection', 'socketcan:can0/0x0', '-f', '/tmp/P.bin'])
+        self.assertEqual(u.resolve_update_target(args), ('can0', 0))
+        self.assertEqual(u.infer_mode(args), 'update')
+        self.assertEqual(u.infer_mode(u.build_parser().parse_args(['-c', 'can0'])), 'list')
+        args.node_id = '0x2'
+        with self.assertRaises(ValueError):
+            u.resolve_update_target(args)
+
+    def test_logging_is_xml_safe_and_failure_is_nonfatal(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()), \
+                tempfile.TemporaryDirectory() as directory:
+            log = u.Logger(str(Path(directory) / 'can.log'), True)
+            log.write('test <&>')
+            log.frame(ack(0x4681, [0xA2]))
+            log.close()
+            self.assertIn('BLOCK_ACK', (Path(directory) / 'can.log').read_text())
+            log = u.Logger(str(Path(directory) / 'missing' / 'can.log'), True)
+            log.write('still running')
+            log.close()
+            self.assertEqual(output.getvalue(), '')
+
+
+if __name__ == '__main__':
+    unittest.main()

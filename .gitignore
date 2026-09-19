@@ -3,6 +3,7 @@
 .venv/
 __pycache__/
 *.py[cod]
+logs/pc_update_remote/
 demo/
 doc/oldcode/
 doc/firmware/

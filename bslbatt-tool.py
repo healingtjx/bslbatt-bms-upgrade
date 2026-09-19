@@ -20,7 +20,6 @@ Example:
 """
 
 import argparse
-import binascii
 import html
 import os
 import re
@@ -31,6 +30,7 @@ import subprocess
 import sys
 import time
 import zipfile
+from types import SimpleNamespace
 
 
 # Venus OS / 调用方通过退出码判断失败类型；0 表示成功。
@@ -52,7 +52,6 @@ MANUFACTURER_TYPE = "bslbatt"
 PRODUCT_ID = "0xB021"
 DEVICE_DESCRIPTION = "BSLBATT BMS"
 DEVICE_FALLBACK_NAME = "BSLBATT"
-FIRMWARE_FILENAME_PREFIX = "BSL"
 DEFAULT_NODE_ID = 0
 DEFAULT_NODE_ID_TEXT = "0x{:X}".format(DEFAULT_NODE_ID)
 
@@ -92,41 +91,6 @@ CAN_RTR_FLAG = 0x40000000
 CAN_ERR_FLAG = 0x20000000
 CAN_ID_MASK = 0x1FFFFFFF
 
-# BSLBATT BMS 固件升级协议使用的 29 位扩展帧 ID。
-# 29-bit extended frame IDs used by the BSLBATT BMS firmware update protocol.
-# 命名规则：
-# Naming rules:
-#   REQ 表示上位机发给 BMS 的请求；
-#   REQ means a request sent from the host to the BMS.
-#   ACK 表示 BMS 回复上位机的确认；
-#   ACK means an acknowledgement sent from the BMS to the host.
-#   DATA_FRAME_BASE_ID 是数据帧起始 ID，每发一帧递增 1。
-#   DATA_FRAME_BASE_ID is the first data-frame ID and increments by 1 per frame.
-BMS_UPGRADE_START_REQ_ID = 0x18A055AA
-BMS_UPGRADE_START_ACK_ID = 0x18A0AA55
-BMS_UPGRADE_DATA_FRAME_BASE_ID = 0x13000001
-BMS_UPGRADE_DATA_ACK_ID = 0x18A1AA55
-BMS_UPGRADE_FINISH_REQ_ID = 0x18A255AA
-BMS_UPGRADE_FINISH_ACK_ID = 0x18A2AA55
-BMS_UPGRADE_ERROR_ID = 0x18A3AA55
-
-# 每个 CAN 数据帧最多 8 字节。这里协议定义前 7 字节是固件数据，
-# Each CAN data frame carries up to 8 bytes. This protocol uses the first 7 bytes for firmware data,
-# 第 8 字节是前 7 字节求和后的低 8 位校验值。
-# and the 8th byte is the low 8-bit checksum of the first 7 bytes.
-BMS_UPGRADE_FRAME_DATA_SIZE = 7
-BMS_UPGRADE_FRAME_TOTAL_SIZE = 8
-# oldcode uses APP_BMS_UPGRADE_ACK_BATCH_SIZE; BMS_CAN.xlsx states the BMS
-# acknowledges once after every 10 firmware data frames.
-BMS_UPGRADE_ACK_BATCH_SIZE = 10
-
-# 各阶段等待 BMS ACK 的超时时间。数据帧之间保留很短间隔，避免总线过载。
-# ACK timeouts for each stage. A short gap is kept between data frames to avoid overloading the bus.
-BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS = 10.0
-BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS = 10.0
-BMS_UPGRADE_FINISH_ACK_TIMEOUT_SECONDS = 10.0
-BMS_UPGRADE_FRAME_INTERVAL_SECONDS = 0.02
-
 BMS_CAN_CORE_IDS = (CAN_ID_LIMITS, CAN_ID_SOC, CAN_ID_MEASUREMENTS, CAN_ID_ALARMS)
 BMS_CAN_OBSERVED_IDS = (CAN_ID_STATUS_OBSERVED, CAN_ID_FLAGS_OBSERVED, CAN_ID_CAPACITY_OBSERVED)
 
@@ -134,34 +98,6 @@ BMS_CAN_OBSERVED_IDS = (CAN_ID_STATUS_OBSERVED, CAN_ID_FLAGS_OBSERVED, CAN_ID_CA
 class FirmwareError(Exception):
     """固件包内容或格式不符合升级协议。
     The firmware package content or format does not match the update protocol."""
-
-    pass
-
-
-class DeviceNotFoundError(Exception):
-    """预留异常：表示未找到目标设备。当前 locate_device() 只清空缓冲区。
-    Reserved exception for a missing target device. locate_device() currently only drains buffers."""
-
-    pass
-
-
-class VerifyFailedError(Exception):
-    """预留异常：表示升级后固件校验失败。当前 verify_firmware() 尚未实现校验。
-    Reserved exception for post-update verification failure. verify_firmware() is not implemented yet."""
-
-    pass
-
-
-class VerifyTimeoutError(Exception):
-    """预留异常：表示等待校验结果超时。
-    Reserved exception for timing out while waiting for verification results."""
-
-    pass
-
-
-class MemoryErrorOnDevice(Exception):
-    """BMS 通过错误帧报告升级或存储异常。
-    The BMS reported an update or storage error through an error frame."""
 
     pass
 
@@ -452,27 +388,18 @@ def open_can(interface_name):
     if not hasattr(socket, "AF_CAN") or not hasattr(socket, "CAN_RAW"):
         raise OSError("SocketCAN is required on Victron GX / Venus OS")
     sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
-    sock.bind((interface_name,))
-    sock.settimeout(2.0)
+    try:
+        sock.bind((interface_name,))
+        sock.settimeout(2.0)
+    except BaseException:
+        sock.close()
+        raise
     return sock
 
 
-def pack_can_frame(can_id, payload, extended=False):
-    """把 CAN ID 和 payload 打包成 Linux SocketCAN 需要的二进制帧。
-    Pack a CAN ID and payload into the binary frame required by Linux SocketCAN."""
-    payload = bytes(bytearray(payload))
-    if len(payload) > 8:
-        raise ValueError("CAN payload must be <= 8 bytes")
-    frame_id = can_id & CAN_ID_MASK
-    if extended:
-        frame_id |= CAN_EFF_FLAG
-    return struct.pack(CAN_FRAME_FORMAT, frame_id, len(payload), payload.ljust(8, b"\x00"))
-
-
-def send_can(sock, can_id, payload, extended=False):
-    """发送一帧 CAN。extended=True 时使用 29 位扩展帧。
-    Send one CAN frame. Use a 29-bit extended frame when extended=True."""
-    sock.send(pack_can_frame(can_id, payload, extended))
+def payload_hex(payload):
+    """Format CAN payloads for discovery diagnostics."""
+    return " ".join("{:02X}".format(byte) for byte in payload)
 
 
 def unpack_can_frame(raw_frame):
@@ -632,16 +559,6 @@ def list_devices(args):
     return result
 
 
-def validate_bslbatt_firmware_filename(filename):
-    """固件载荷文件名必须以 BSL 开头，避免把其他产品的固件写入 BMS。
-    Firmware payload filenames must start with BSL to prevent flashing another product's firmware."""
-    basename = os.path.basename(filename)
-    if not basename.startswith(FIRMWARE_FILENAME_PREFIX):
-        raise FirmwareError(
-            "firmware filename must start with {}: {}".format(FIRMWARE_FILENAME_PREFIX, basename)
-        )
-
-
 def read_firmware_from_zip(path):
     """从 zip 固件包中读取唯一的 .bin/.fw/.img 文件，并先做 zip CRC 检查。
     Read the single .bin/.fw/.img file from a zip firmware package after checking the zip CRC."""
@@ -664,7 +581,6 @@ def read_firmware_from_zip(path):
             if len(candidates) != 1:
                 raise FirmwareError("zip package must contain exactly one .bin/.fw/.img firmware file")
 
-            validate_bslbatt_firmware_filename(candidates[0].filename)
             return archive.read(candidates[0])
     except zipfile.BadZipFile as exc:
         raise OSError("invalid zip file: {}".format(exc))
@@ -678,7 +594,6 @@ def read_firmware(path):
     if zipfile.is_zipfile(path):
         data = read_firmware_from_zip(path)
     else:
-        validate_bslbatt_firmware_filename(path)
         with open(path, "rb") as firmware_file:
             data = firmware_file.read()
     if not data:
@@ -686,492 +601,440 @@ def read_firmware(path):
     return data
 
 
-def crc32_hex(data):
-    """计算固件 CRC32，仅用于日志/展示，不参与当前协议校验。
-    Calculate the firmware CRC32 for logging/display only; it is not used by the current protocol check."""
-    return "{:08X}".format(binascii.crc32(data) & 0xFFFFFFFF)
+# Validated pc_update.py wire settings and timing, frozen for production.
+UPGRADE_CONFIG = {
+    'block_size_includes_number': False,
+    'block_size_field': 'zero',
+    'block_data_id_increment': False,
+    'block_crc_number_padding': False,
+    'block_control_padding': True,
+    'firmware_size_padding': True,
+    'final_control_padding': True,
+    'firmware_size_endian': 'little',
+    'response_size_endian': 'big',
+    'block_number_endian': 'little',
+    'field_endian': 'little',
+    'block_crc_order': 'data_only',
+    'block_crc_endian': 'little',
+    'crc_endian': 'little',
+    'tail_padding': 'ff',
+    'tail_size': 'actual',
+    'block_crc_scope': 'padded',
+    'firmware_crc_scope': 'actual',
+    'frame_interval': 0.003,
+    'size_ack_delay': 0.048,
+    'block_ack_delay': 0.075,
+    'verify_delay': 0.032,
+    'restart_delay': 0.032,
+    'restart_settle_delay': 15.0,
+    'ack_timeout': 30.0,
+}
 
-
-def le32(value):
-    """把整数编码为小端 32 位，协议中的 size/frame_count 都按小端传输。
-    Encode an integer as little-endian 32-bit; protocol size/frame_count fields are sent little-endian."""
-    return struct.pack("<I", value & 0xFFFFFFFF)
-
-
-def read_le32(data):
-    """从 payload 前 4 字节读取小端 32 位整数；长度不足时按 0 处理。
-    Read a little-endian 32-bit integer from the first 4 payload bytes; treat short data as 0."""
-    if len(data) < 4:
-        return 0
-    return struct.unpack("<I", data[:4])[0]
-
-
-def payload_hex(payload):
-    """把字节序列格式化成十六进制字符串，用于调试日志。
-    Format a byte sequence as a hexadecimal string for debug logs."""
-    return " ".join("{:02X}".format(byte) for byte in payload)
-
-
-def can_id_name(can_id):
-    """把关键 CAN ID 转成可读名称，方便分析 CAN 日志。
-    Convert key CAN IDs to readable names for easier CAN log analysis."""
-    names = {
-        BMS_UPGRADE_START_REQ_ID: "START_REQ",
-        BMS_UPGRADE_START_ACK_ID: "START_ACK",
-        BMS_UPGRADE_DATA_ACK_ID: "DATA_ACK",
-        BMS_UPGRADE_FINISH_REQ_ID: "FINISH_REQ",
-        BMS_UPGRADE_FINISH_ACK_ID: "FINISH_ACK",
-        BMS_UPGRADE_ERROR_ID: "ERROR",
-    }
-    if can_id in names:
-        return names[can_id]
-    if can_id >= BMS_UPGRADE_DATA_FRAME_BASE_ID and (can_id & 0xFF000000) == 0x13000000:
-        return "DATA_FRAME"
-    return "UNKNOWN"
-
-
-def parse_control_payload(can_id, payload):
-    """按控制帧类型解析 payload，主要用于 CAN 日志辅助排查。
-    Parse the payload by control-frame type, mainly to aid CAN log troubleshooting."""
-    if len(payload) != BMS_UPGRADE_FRAME_TOTAL_SIZE:
-        return "invalid_len={}".format(len(payload))
-    if can_id == BMS_UPGRADE_ERROR_ID:
-        return "error_payload={}".format(payload.hex().upper())
-    if payload == b"\xFF" * BMS_UPGRADE_FRAME_TOTAL_SIZE:
-        return "all_ff=true"
-    if can_id in (BMS_UPGRADE_START_ACK_ID, BMS_UPGRADE_FINISH_ACK_ID):
-        return "image_size={} frame_count={}".format(read_le32(payload[:4]), read_le32(payload[4:8]))
-    if can_id == BMS_UPGRADE_DATA_ACK_ID:
-        return "acked_frame_count={} tail={}".format(read_le32(payload[:4]), payload[4:8].hex().upper())
-    return "le32_0={} le32_4={}".format(read_le32(payload[:4]), read_le32(payload[4:8]))
-
-
-def ceil_div(value, divisor):
-    """向上取整除法，用于把固件长度补齐到 7 字节帧边界。
-    Ceiling division used to align firmware length to the 7-byte frame boundary."""
-    return (value + divisor - 1) // divisor
+FRAME = struct.Struct('=IB3x8s')
+EFF, RTR, ERR, MASK = 0x80000000, 0x40000000, 0x20000000, 0x1FFFFFFF
+REQUESTS = {0x4610: 'SIZE', 0x4630: 'BLOCK_NUMBER', 0x4650: 'BLOCK_DATA',
+            0x4670: 'BLOCK_CRC_SIZE', 0x4690: 'FIRMWARE_CRC',
+            0x46B0: 'RESTART', 0x46D0: 'STATUS_QUERY'}
+RESPONSES = {0x4621: 'SIZE_ACK', 0x4681: 'BLOCK_ACK', 0x46A1: 'CRC_ACK',
+             0x46C1: 'RESTART_ACK', 0x46E1: 'STATUS_ACK'}
+CODES = {
+    0xA1: 'Firmware size accepted', 0xA2: 'Block accepted',
+    0xA3: 'Firmware CRC accepted',
+    1: 'Invalid firmware size', 2: 'Block CRC mismatch',
+    3: 'Invalid block sequence', 4: 'Block write failed',
+    5: 'Invalid block size', 6: 'CRC write failed',
+    7: 'Firmware total size mismatch', 8: 'Firmware CRC mismatch',
+    9: 'Invalid firmware', 10: 'Forwarding', 11: 'Local update started',
+    12: 'Forwarding', 13: 'Update successful', 14: 'Forwarding failed',
+    15: 'Update failed', 16: 'Local update in progress',
+    17: 'Update conditions not met', 18: 'Incompatible device version',
+    19: 'Invalid command sequence', 20: 'Firmware CRC16 storage failed',
+    21: 'Update conditions not met',
+}
+VALID_CODES = {0x4621: {0xA1, 1}, 0x4681: {0xA2, 2, 3, 4, 5, 19},
+               0x46A1: {0xA3, 6, 7, 8, 19, 20},
+               0x46C1: {9, 10, 11, 19, 21}, 0x46E1: set(range(12, 20))}
 
 
 def validate_bslbatt_firmware(firmware):
-    """
-    Validate BSLBATT firmware format before touching the device.
+    if not 0 < len(firmware) <= 65535 * 128:
+        raise FirmwareError('firmware must be nonempty and fit 65535 blocks')
 
-    中文说明：
-        当前实现只做最基础检查：非空、传输大小/帧数不超过 32 位。
-        真正的固件头、型号、版本、签名、CRC 等校验还需要后续按实际包格式补齐。
-    English note:
-        The current implementation only performs basic checks: non-empty data
-        and transfer size/frame count within 32 bits.
-        Real firmware header, model, version, signature, CRC, and other checks
-        still need to be completed according to the actual package format.
 
-    Replace this with the actual package checks, for example:
-        header magic
-        target model
-        target version
-        payload length
-        CRC/signature
-    """
-    if not firmware:
-        raise FirmwareError("empty firmware")
-    transfer_size = ceil_div(len(firmware), BMS_UPGRADE_FRAME_DATA_SIZE) * BMS_UPGRADE_FRAME_DATA_SIZE
-    frame_count = transfer_size // BMS_UPGRADE_FRAME_DATA_SIZE
-    if transfer_size > 0xFFFFFFFF or frame_count > 0xFFFFFFFF:
-        raise FirmwareError("firmware is too large for BSLBATT CAN upgrade protocol")
-    return {
-        "size": len(firmware),
-        "transfer_size": transfer_size,
-        "frame_count": frame_count,
-        "crc32": crc32_hex(firmware),
-    }
+class ProtocolError(Exception):
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+def crc16(data):
+    """CRC16/Modbus: init FFFF, reflected polynomial A001, xorout 0."""
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0xA001 if crc & 1 else 0)
+    return crc
+
+
+def median(values):
+    """Small timing samples; support stripped-down target Python installations."""
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+
+
+def unpack_frame(raw, direction='RX'):
+    if len(raw) != FRAME.size:
+        raise ValueError('invalid classic CAN frame size: {}'.format(len(raw)))
+    identifier, dlc, payload = FRAME.unpack(raw)
+    if dlc > 8:
+        raise ValueError('invalid classic CAN DLC: {}'.format(dlc))
+    return dict(id=identifier & MASK, extended=bool(identifier & EFF),
+                remote=bool(identifier & RTR), error=bool(identifier & ERR),
+                data=payload[:dlc], direction=direction)
+
+
+def response_payload(identifier, data):
+    """Accept logical payload or an 8-byte frame with zero-only trailing padding."""
+    expected = 3 if data and (identifier, data[0]) in ((0x4621, 0xA1), (0x46A1, 0xA3)) else 1
+    if len(data) == expected:
+        return data
+    if len(data) == 8 and not any(data[expected:]):
+        return data[:expected]
+    raise ValueError('invalid_length_or_padding={} expected={} or zero-padded DLC=8'.format(len(data), expected))
+
+
+def decode(identifier, data):
+    name = REQUESTS.get(identifier, RESPONSES.get(identifier, ''))
+    if 0x4651 <= identifier <= 0x465F:
+        name = 'BLOCK_DATA experimental_index={}'.format(identifier - 0x4650)
+    if identifier in RESPONSES:
+        raw_length = len(data)
+        try:
+            data = response_payload(identifier, data)
+        except ValueError as exc:
+            return name + ' ' + str(exc)
+        if raw_length > len(data):
+            name += ' zero_padding={}'.format(raw_length - len(data))
+        return '{} status=0x{:02X} {}{}'.format(
+            name, data[0], CODES.get(data[0], 'Unknown status'),
+            ' extra=' + data[1:].hex(' ') if len(data) > 1 else '')
+    sizes = {0x4610: 4, 0x4630: 2, 0x4670: 4, 0x4690: 2, 0x46B0: 0, 0x46D0: 0}
+    if identifier in sizes and len(data) != sizes[identifier]:
+        if len(data) == 8 and not any(data[sizes[identifier]:]):
+            return name + ' zero_padding={}'.format(8 - sizes[identifier])
+        return '{} invalid_length={} expected={}'.format(name, len(data), sizes[identifier])
+    return name
+
+
+class Logger:
+    def __init__(self, path=None, debug_enabled=False):
+        self.file = None
+        self.quiet_frames = True
+        self.debug_enabled = debug_enabled
+        if path:
+            try:
+                self.file = open(path, 'a', encoding='utf-8')
+            except OSError as exc:
+                print('CAN log unavailable: {}'.format(exc), file=sys.stderr, flush=True)
+
+    def persist(self, text):
+        if self.file:
+            try:
+                self.file.write(text)
+                self.file.flush()
+            except OSError as exc:
+                print('CAN log disabled: {}'.format(exc), file=sys.stderr, flush=True)
+                self.close()
+
+    def write(self, message):
+        now = time.time()
+        line = '{}.{:03d} {}'.format(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)),
+                                    int(now * 1000) % 1000, message)
+        debug(self.debug_enabled, line)
+        if self.file:
+            self.persist(line + '\n')
+
+    def frame_line(self, frame, interface=''):
+        now = frame.get('wall_time', time.time())
+        prefix = '{}.{:03d} '.format(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)),
+                                     int(now * 1000) % 1000)
+        return prefix + '{} {} {} id=0x{:08X} dlc={} rtr={} err={} data=[{}] {} mono={}'.format(
+            interface, frame['direction'], 'EFF' if frame['extended'] else 'SFF',
+            frame['id'], len(frame['data']), frame['remote'], frame['error'],
+            frame['data'].hex(' '), decode(frame['id'], frame['data'])
+            if frame['extended'] and not frame['remote'] and not frame['error'] else '',
+            frame.get('monotonic', 'unknown'))
+
+    def batch_frames(self, frames, interface=''):
+        if not frames:
+            return
+        text = '\n'.join(self.frame_line(f, interface) for f in frames)
+        if not self.quiet_frames:
+            debug(self.debug_enabled, text)
+        if self.file:
+            self.persist(text + '\n')
+
+    def frame(self, frame, interface=''):
+        self.batch_frames([frame], interface)
+
+    def detail(self, message):
+        if self.file:
+            self.persist(message + '\n')
+
+    def close(self):
+        if self.file:
+            file, self.file = self.file, None
+            try:
+                file.close()
+            except OSError:
+                pass
+
+
+class SocketCan:
+    def __init__(self, interface):
+        self.interface = interface
+        self.sock = None
+
+    def __enter__(self):
+        if not hasattr(socket, 'AF_CAN'):
+            raise OSError('Linux SocketCAN is required')
+        self.sock = socket.socket(socket.AF_CAN, socket.SOCK_RAW, socket.CAN_RAW)
+        try:
+            self.sock.bind((self.interface,))
+            self.sock.setblocking(False)
+        except BaseException:
+            self.sock.close()
+            self.sock = None
+            raise
+        return self
+
+    def __exit__(self, *args):
+        if self.sock is not None:
+            self.sock.close()
+            self.sock = None
+
+    def send(self, identifier, data):
+        if not 0 <= identifier <= MASK or len(data) > 8:
+            raise ValueError('invalid CAN ID or payload length')
+        raw = FRAME.pack(identifier | EFF, len(data), data.ljust(8, b'\x00'))
+        if self.sock.send(raw) != len(raw):
+            raise OSError('short CAN write')
+
+    def recv(self, timeout):
+        if not select.select([self.sock], [], [], max(0, timeout))[0]:
+            return None
+        try:
+            raw, _, flags, _ = self.sock.recvmsg(FRAME.size)
+        except BlockingIOError:
+            return None
+        return unpack_frame(raw, 'TX' if flags & socket.MSG_DONTROUTE else 'RX')
+
+
+def block_crc_input(number, data, config):
+    if config.block_crc_order == 'data_only':
+        if config.block_crc_number_padding:
+            raise ValueError('data-only CRC cannot include number padding')
+        return data
+    if config.block_crc_number_padding:
+        if not config.block_control_padding:
+            raise ValueError('CRC number padding requires padded control frames')
+        number = number.ljust(8, b'\x00')
+    if config.block_crc_order == 'data_number':
+        return data + number
+    if config.block_crc_order == 'number_data':
+        return number + data
+    raise ValueError('unknown block CRC order: ' + config.block_crc_order)
+
+
+def blocks(firmware, config):
+    for offset in range(0, len(firmware), 128):
+        actual = firmware[offset:offset + 128]
+        padded = actual if config.tail_padding == 'none' else actual.ljust(
+            128, bytes([int(config.tail_padding, 16)]))
+        number = (offset // 128 + 1).to_bytes(2, config.block_number_endian)
+        crc_data = padded if config.block_crc_scope == 'padded' else actual
+        size = len(padded) if config.tail_size == 'padded' else len(actual)
+        if config.block_size_includes_number:
+            size += len(number)
+        if config.block_size_field == 'zero':
+            size = 0
+        elif config.block_size_field != 'actual':
+            raise ValueError('unknown block size field mode: ' + config.block_size_field)
+        trailer = crc16(block_crc_input(number, crc_data, config)).to_bytes(2, config.block_crc_endian)
+        trailer += size.to_bytes(2, config.field_endian)
+        frames = [(0x4630, number)]
+        frames.extend((0x4650 + (i // 8 if config.block_data_id_increment else 0),
+                       padded[i:i + 8]) for i in range(0, len(padded), 8))
+        frames.append((0x4670, trailer))
+        yield offset // 128 + 1, len(actual), frames
+
+
+def block_diagnostic(number, actual_length, frames, config):
+    transmitted = b''.join(data for identifier, data in frames if 0x4650 <= identifier <= 0x465F)
+    crc_data = transmitted if config.block_crc_scope == 'padded' else transmitted[:actual_length]
+    crc_input = block_crc_input(frames[0][1], crc_data, config)
+    return ('BLOCK_CHECK block={} actual={} transmitted={} number=[{}] '
+            'crc_input_len={} crc_input=[{}] crc16=0x{:04X} trailer=[{}]').format(
+                number, actual_length, len(transmitted), frames[0][1].hex(' '),
+                len(crc_input), crc_input.hex(' '), crc16(crc_input), frames[-1][1].hex(' '))
+
+
+def firmware_crc(firmware, config):
+    data = firmware
+    if config.firmware_crc_scope == 'padded' and config.tail_padding != 'none':
+        data = data.ljust(((len(data) + 127) // 128) * 128, bytes([int(config.tail_padding, 16)]))
+    return crc16(data).to_bytes(2, config.crc_endian)
+
+
+def request_payload(identifier, data, config):
+    """Apply captured control padding identically to transmission and preview."""
+    if ((config.block_control_padding and identifier in (0x4630, 0x4670))
+            or (config.firmware_size_padding and identifier == 0x4610)
+            or (config.final_control_padding and identifier in (0x4690, 0x46B0, 0x46D0))):
+        return data.ljust(8, b'\x00')
+    return data
 
 
 class BslbattFirmwareUpdater:
-    """
-    BSLBATT BMS CAN upgrade protocol ported from oldcode/bms_upgrade_service.c.
+    def __init__(self, bus, config, log, clock=time.monotonic, sleep=time.sleep):
+        self.bus, self.config, self.log = bus, config, log
+        self.clock, self.sleep = clock, sleep
+        self.events = None
+        self.last_rx_time = None
 
-    The Venus-facing contract is handled outside this class: command arguments,
-    XML progress, line-buffered stdout, and standard exit codes.
-
-    中文说明：
-        这个类只关心 BMS CAN 升级协议本身：
-        1. 发送开始升级请求；
-        2. 按 7 字节一帧发送固件数据；
-        3. 每 10 帧等待一次 BMS 数据 ACK；
-        4. 发送结束升级请求；
-        5. 解析错误帧、记录 CAN 日志。
-    English note:
-        This class only handles the BMS CAN update protocol itself:
-        1. Send the start update request.
-        2. Send firmware data in 7-byte frames.
-        3. Wait for a BMS data ACK after every 10 frames.
-        4. Send the finish update request.
-        5. Parse error frames and record CAN logs.
-    """
-
-    def __init__(self, sock, node_id, firmware, firmware_info, debug_enabled=False, can_log_path=None):
-        """保存升级上下文和传输状态；初始化时写一条 CAN 日志头。
-        Store update context and transfer state; write a CAN log header during initialization."""
-        self.sock = sock
-        self.node_id = node_id
-        self.firmware = firmware
-        self.firmware_info = firmware_info
-        self.debug_enabled = debug_enabled
-        self.can_log_path = can_log_path
-        self.can_log_failed = False
-        self.firmware_size = len(firmware)
-        self.transfer_size = firmware_info["transfer_size"]
-        self.frame_count = firmware_info["frame_count"]
-        self.sent_frame_count = 0
-        self.next_offset = 0
-        self.last_frame_tail = b"\x00\x00\x00\x00"
-        self.last_logged_progress = -1
-        self.write_can_log(
-            "START firmware_size={} transfer_size={} frame_count={} crc32={} node_id=0x{:X}".format(
-                self.firmware_size,
-                self.transfer_size,
-                self.frame_count,
-                self.firmware_info["crc32"],
-                self.node_id,
-            )
-        )
-
-    def debug(self, message):
-        """类内部调试日志入口，受 --debug 控制。
-        Internal debug-log entry point controlled by --debug."""
-        debug(self.debug_enabled, message)
-
-    def send_extended(self, can_id, payload):
-        """发送 BSLBATT 升级协议使用的 29 位扩展 CAN 帧，并打印调试日志。
-        Send a 29-bit extended CAN frame used by the BSLBATT update protocol and print debug logs."""
-        payload_hex = " ".join("{:02X}".format(byte) for byte in payload)
-        self.debug("TX id=0x{:08X} len={} data={}".format(can_id, len(payload), payload_hex))
-        send_can(self.sock, can_id, payload, extended=True)
-
-    def drain_control_frames(self):
-        """清空当前 socket 中已积压的 CAN 帧，避免旧 ACK 干扰新一次升级流程。
-        Drain queued CAN frames from the current socket so stale ACKs do not interfere with a new update."""
-        while True:
-            try:
-                readable, _, _ = select.select([self.sock], [], [], 0)
-            except OSError:
-                return
-            if not readable:
-                return
-            try:
-                raw_frame = self.sock.recv(CAN_FRAME_SIZE)
-            except OSError:
-                return
-            self.log_can_frame("RX_DRAIN", unpack_can_frame(raw_frame))
-
-    def receive_control_frame(self, expected_can_id, timeout):
-        """等待指定 CAN ID 的 ACK；期间会忽略无关帧，遇到错误帧立即失败。
-        Wait for the ACK with the specified CAN ID; ignore unrelated frames and fail immediately on error frames."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise socket.timeout("timeout waiting for 0x{:08X}".format(expected_can_id))
-
-            readable, _, _ = select.select([self.sock], [], [], remaining)
-            if not readable:
-                raise socket.timeout("timeout waiting for 0x{:08X}".format(expected_can_id))
-
-            raw_frame = self.sock.recv(CAN_FRAME_SIZE)
-            frame = unpack_can_frame(raw_frame)
-            self.log_can_frame("RX", frame, expected_can_id)
-            # 升级协议只接受扩展数据帧；错误帧、远程帧、标准帧都忽略。
-            # The update protocol only accepts extended data frames; error, remote, and standard frames are ignored.
-            if frame["is_error"] or frame["is_remote"] or not frame["is_extended"]:
-                continue
-
-            can_id = frame["can_id"]
-            payload = frame["data"]
-            # BMS 主动发错误帧时，映射成设备端内存/升级异常。
-            # When the BMS sends an error frame, map it to a device-side memory/update exception.
-            if can_id == BMS_UPGRADE_ERROR_ID:
-                self.log_rx(can_id, payload)
-                self.raise_upgrade_error(payload, expected_can_id)
-
-            # 总线上可能有其他设备/其他协议的帧，这里只等待目标 ACK。
-            # Other devices/protocols may be on the bus, so only the target ACK is accepted here.
-            if can_id != expected_can_id:
-                continue
-
-            self.log_rx(can_id, payload)
-            # 控制帧固定 8 字节，不满足则继续等下一帧。
-            # Control frames are fixed at 8 bytes; otherwise keep waiting for the next frame.
-            if len(payload) != BMS_UPGRADE_FRAME_TOTAL_SIZE:
-                self.debug("Ignore invalid ACK length for 0x{:08X}: {}".format(can_id, len(payload)))
-                continue
-            return payload
-
-    def raise_upgrade_error(self, payload, expected_can_id):
-        """把 BMS 错误帧统一映射成升级失败异常。
-        Map BMS error frames into update failure exceptions consistently."""
-        payload_str = payload_hex(payload) if payload else "(empty)"
-        raise MemoryErrorOnDevice(
-            "BMS reported upgrade error frame: id=0x{:08X} len={} data=[{}] expected_ack=0x{:08X} sent_frames={}/{} next_offset={}".format(
-                BMS_UPGRADE_ERROR_ID,
-                len(payload),
-                payload_str,
-                expected_can_id,
-                self.sent_frame_count,
-                self.frame_count,
-                self.next_offset,
-            )
-        )
-
-    def poll_upgrade_error(self, timeout):
-        """在帧间隔内轮询 BMS 错误帧；发现错误立即停止后续发送。
-        Poll for BMS error frames during the inter-frame interval and stop sending immediately if one is found."""
-        deadline = time.monotonic() + timeout
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-
-            readable, _, _ = select.select([self.sock], [], [], remaining)
-            if not readable:
-                return
-
-            raw_frame = self.sock.recv(CAN_FRAME_SIZE, socket.MSG_PEEK)
-            frame = unpack_can_frame(raw_frame)
-
-            if frame["is_error"] or frame["is_remote"] or not frame["is_extended"]:
-                self.sock.recv(CAN_FRAME_SIZE)
-                self.log_can_frame("RX_POLL_DROP", frame)
-                continue
-
-            can_id = frame["can_id"]
-            if can_id == BMS_UPGRADE_ERROR_ID:
-                raw_frame = self.sock.recv(CAN_FRAME_SIZE)
-                frame = unpack_can_frame(raw_frame)
-                payload = frame["data"]
-                self.log_can_frame("RX", frame, BMS_UPGRADE_DATA_ACK_ID)
-                self.log_rx(can_id, payload)
-                self.raise_upgrade_error(payload, BMS_UPGRADE_DATA_ACK_ID)
-
-            # ACK 留给 receive_control_frame()/wait_data_ack() 做完整校验；
-            # Leave ACKs for receive_control_frame()/wait_data_ack() to validate fully.
-            # 这里继续保持原来的帧间隔，避免 ACK 提前到达后下一帧过早发送。
-            # Keep the original frame interval here so an early ACK does not make the next frame send too soon.
-            if can_id in (BMS_UPGRADE_START_ACK_ID, BMS_UPGRADE_DATA_ACK_ID, BMS_UPGRADE_FINISH_ACK_ID):
-                if remaining > 0:
-                    time.sleep(remaining)
-                return
-
-            self.sock.recv(CAN_FRAME_SIZE)
-            self.log_can_frame("RX_POLL_DROP", frame)
-
-    def log_rx(self, can_id, payload):
-        """把收到的有效控制帧输出到调试日志。
-        Output received valid control frames to the debug log."""
-        self.debug("RX id=0x{:08X} len={} data={}".format(can_id, len(payload), payload_hex(payload)))
-
-    def write_can_log(self, line):
-        """追加写 CAN 日志；写失败后会关闭后续日志写入，避免影响升级。
-        Append to the CAN log; disable later log writes after a failure so the update is not affected."""
-        if not self.can_log_path or self.can_log_failed:
-            return
-        try:
-            with open(self.can_log_path, "a") as log_file:
-                log_file.write("{:.3f} {}\n".format(time.time(), line))
-        except OSError as exc:
-            self.can_log_failed = True
-            self.debug("CAN log write failed: {}".format(exc))
-
-    def log_can_frame(self, direction, frame, expected_can_id=None):
-        """把 CAN 帧解析成一行可读日志，包含方向、ID、标志位、payload 和解析字段。
-        Render a CAN frame as one readable log line with direction, ID, flags, payload, and parsed fields."""
-        can_id = frame["can_id"]
-        payload = frame["data"]
-        flags = []
-        if frame["is_extended"]:
-            flags.append("EFF")
+    def record_frame(self, frame):
+        frame = dict(frame, wall_time=time.time(), monotonic=self.clock())
+        if self.events is None:
+            self.log.frame(frame, self.config.can)
         else:
-            flags.append("SFF")
-        if frame["is_remote"]:
-            flags.append("RTR")
-        if frame["is_error"]:
-            flags.append("ERR")
-        parsed = ""
-        if frame["is_extended"] and len(payload) > 0:
-            parsed = " parsed={}".format(parse_control_payload(can_id, payload))
-        expected = ""
-        if expected_can_id is not None:
-            expected = " expected=0x{:08X}".format(expected_can_id)
-        self.write_can_log(
-            "{} id=0x{:08X} name={} len={} flags={} data={}{}{}".format(
-                direction,
-                can_id,
-                can_id_name(can_id),
-                len(payload),
-                ",".join(flags) if flags else "-",
-                payload_hex(payload),
-                expected,
-                parsed,
-            )
-        )
+            if len(self.events) >= 4096:
+                raise ProtocolError('block event buffer overflow')
+            self.events.append(frame)
 
-    def size_and_count_payload(self):
-        """开始/结束请求的 payload：补齐后的传输字节数 + 总帧数。
-        Payload for start/finish requests: padded transfer byte count plus total frame count."""
-        return le32(self.transfer_size) + le32(self.frame_count)
+    def flush_frames(self):
+        events, self.events = self.events, None
+        if events:
+            self.log.batch_frames(events, self.config.can)
 
-    def locate_device(self):
-        """设备定位阶段。当前协议没有主动探测，只清空旧帧作为准备。
-        Device location stage. The current protocol has no active probe and only drains stale frames."""
-        self.drain_control_frames()
+    def send(self, identifier, data):
+        data = request_payload(identifier, data, self.config)
+        self.bus.send(identifier, data)
+        completed = self.clock()
+        self.record_frame(dict(id=identifier, data=data, extended=True, remote=False,
+                            error=False, direction='TX'))
+        return completed
 
-    def enter_bootloader(self):
-        """发送开始升级请求，等待 BMS 的 START_ACK，表示设备进入升级流程。
-        Send the start update request and wait for the BMS START_ACK to indicate the device entered update flow."""
-        self.debug(
-            "prepare firmware rawSize={} transferSize={} frameCount={} node_id=0x{:X}".format(
-                self.firmware_size,
-                self.transfer_size,
-                self.frame_count,
-                self.node_id,
-            )
-        )
-        self.send_extended(BMS_UPGRADE_START_REQ_ID, self.size_and_count_payload())
-        self.receive_control_frame(BMS_UPGRADE_START_ACK_ID, BMS_UPGRADE_START_ACK_TIMEOUT_SECONDS)
-
-    def erase_flash(self):
-        """擦除阶段占位。当前 BMS 协议可能在 START_REQ 后由设备内部自动处理。
-        Erase-stage placeholder. The current BMS protocol may handle erase internally after START_REQ."""
-        return
-
-    def write_firmware(self):
-        """按批次发送固件数据；每 10 帧等待一次 DATA_ACK。
-        Send firmware data in batches and wait for a DATA_ACK after every 10 frames."""
-        while self.sent_frame_count < self.frame_count:
-            batch_target = min(self.frame_count, self.sent_frame_count + BMS_UPGRADE_ACK_BATCH_SIZE)
-            while self.sent_frame_count < batch_target:
-                self.send_data_frame()
-                progress = 20 + int((self.sent_frame_count * 70) / max(1, self.frame_count))
-                xml_progress(min(89, progress))
-                self.log_transfer_progress("SEND")
-                if BMS_UPGRADE_FRAME_INTERVAL_SECONDS > 0:
-                    self.poll_upgrade_error(BMS_UPGRADE_FRAME_INTERVAL_SECONDS)
-
-            self.wait_data_ack(batch_target)
-            self.log_transfer_progress("ACK")
-
-    def send_data_frame(self):
-        """发送单个数据帧：7 字节固件数据 + 1 字节求和校验。
-        Send one data frame: 7 bytes of firmware data plus a 1-byte sum checksum."""
-        chunk = self.firmware[self.next_offset : self.next_offset + BMS_UPGRADE_FRAME_DATA_SIZE]
-        read_size = len(chunk)
-        # 最后一帧不足 7 字节时用 0xFF 填充，保证 payload 固定 8 字节。
-        # Pad the last frame with 0xFF when it has fewer than 7 bytes so the payload is always 8 bytes.
-        payload = bytearray(b"\xFF" * BMS_UPGRADE_FRAME_TOTAL_SIZE)
-        payload[:read_size] = chunk
-        # 第 8 字节是前 7 字节求和后的低 8 位，用于 BMS 侧快速校验。
-        # The 8th byte is the low 8 bits of the first 7 bytes' sum for quick BMS-side checking.
-        payload[7] = sum(payload[:BMS_UPGRADE_FRAME_DATA_SIZE]) & 0xFF
-
-        # 数据帧 CAN ID 从 0x13000001 开始，每发送一帧递增。
-        # Data-frame CAN IDs start at 0x13000001 and increment for each sent frame.
-        can_id = BMS_UPGRADE_DATA_FRAME_BASE_ID + self.sent_frame_count
-        self.send_extended(can_id, payload)
-
-        self.sent_frame_count += 1
-        self.next_offset += read_size
-        self.last_frame_tail = bytes(payload[4:8])
-
-    def wait_data_ack(self, expected_frame_count):
-        """等待数据 ACK，并校验 ACK 中的累计帧数和最后一帧尾部字段。
-        Wait for a data ACK and validate the accumulated frame count and last-frame tail field."""
+    def wait_ack(self, identifier, accepted, timeout=None, deadline=None):
+        if deadline is None:
+            deadline = self.clock() + (self.config.ack_timeout if timeout is None else timeout)
         while True:
-            payload = self.receive_control_frame(BMS_UPGRADE_DATA_ACK_ID, BMS_UPGRADE_DATA_ACK_TIMEOUT_SECONDS)
-            acked_frame_count = read_le32(payload)
-            tail = payload[4:8]
-            # 全 FF ACK 被视为通用确认，直接通过。
-            # An all-FF ACK is treated as a generic acknowledgement and accepted immediately.
-            if payload == b"\xFF" * BMS_UPGRADE_FRAME_TOTAL_SIZE:
-                return
-            # ACK 中应返回当前批次已接收的累计帧数，不匹配则忽略继续等。
-            # The ACK should return the accumulated received frame count for this batch; ignore mismatches and keep waiting.
-            if acked_frame_count != expected_frame_count:
-                self.debug(
-                    "Ignore data ACK frameCount={}, expected={}".format(acked_frame_count, expected_frame_count)
-                )
+            remaining = deadline - self.clock()
+            if remaining <= 0:
+                raise TimeoutError('timeout waiting for 0x{:04X}'.format(identifier))
+            frame = self.bus.recv(remaining)
+            if frame is None:
                 continue
-            # ACK 后 4 字节应等于最后一帧 payload[4:8]，用于确认 BMS 收到正确批次。
-            # The last 4 ACK bytes should match the last frame payload[4:8], confirming the BMS received the right batch.
-            if tail != self.last_frame_tail:
-                self.debug(
-                    "Ignore data ACK tail={}, expected={}".format(tail.hex().upper(), self.last_frame_tail.hex().upper())
-                )
+            self.last_rx_time = self.clock()
+            self.record_frame(frame)
+            if frame['error'] or frame['remote'] or not frame['extended'] or frame['id'] != identifier:
                 continue
-            return
+            try:
+                data = response_payload(identifier, frame['data'])
+            except ValueError:
+                continue
+            if data[0] not in VALID_CODES[identifier]:
+                raise ProtocolError('unexpected status 0x{:02X} for 0x{:04X}'.format(data[0], identifier))
+            if data[0] not in accepted:
+                raise ProtocolError('BMS 0x{:02X}: {}'.format(data[0], CODES[data[0]]), data[0])
+            return data
 
-    def log_transfer_progress(self, stage):
-        """写入传输进度到 CAN 日志；SEND 阶段同百分比只记录一次。
-        Write transfer progress to the CAN log; during SEND, each percentage is logged only once."""
-        percent = int((self.sent_frame_count * 100) / max(1, self.frame_count))
-        if stage != "ACK" and percent == self.last_logged_progress:
-            return
-        self.last_logged_progress = percent
-        self.write_can_log(
-            "PROGRESS stage={} sent_frames={}/{} sent_bytes={}/{} percent={} next_offset={}".format(
-                stage,
-                self.sent_frame_count,
-                self.frame_count,
-                min(self.next_offset, self.firmware_size),
-                self.firmware_size,
-                percent,
-                self.next_offset,
-            )
-        )
-
-    def verify_firmware(self):
-        """校验阶段占位。当前没有额外读取设备校验结果。
-        Verification-stage placeholder. No extra device verification result is read currently."""
-        return
-
-    def reboot_application(self):
-        """发送结束升级请求，等待 FINISH_ACK，BMS 随后应启动新应用。
-        Send the finish update request and wait for FINISH_ACK; the BMS should then start the new application."""
-        self.send_extended(BMS_UPGRADE_FINISH_REQ_ID, self.size_and_count_payload())
-        self.receive_control_frame(BMS_UPGRADE_FINISH_ACK_ID, BMS_UPGRADE_FINISH_ACK_TIMEOUT_SECONDS)
-
-    def run(self):
-        """对外的完整升级流程，同时输出 Venus OS 需要的 XML 消息和进度。
-        Public full update flow that also outputs the XML messages and progress required by Venus OS."""
-        xml_message("Checking firmware")
-        debug(
-            self.debug_enabled,
-            "firmware size={} crc32={}".format(self.firmware_info["size"], self.firmware_info["crc32"]),
-        )
-        xml_progress(0)
-
-        xml_message("Locating device")
-        self.locate_device()
-        xml_progress(5)
-
-        xml_message("Entering bootloader")
-        self.enter_bootloader()
-        xml_progress(10)
-
-        xml_message("Erasing device")
-        self.erase_flash()
-        xml_progress(20)
-
-        xml_message("Writing firmware")
-        self.write_firmware()
-        xml_progress(90)
-
-        xml_message("Verifying firmware")
-        self.verify_firmware()
-        xml_progress(98)
-
-        xml_message("Starting application")
-        self.reboot_application()
+    def poll_status(self):
+        self.log.write('RESTART_SETTLE seconds={}'.format(self.config.restart_settle_delay))
+        self.sleep(self.config.restart_settle_delay)
+        self.send(0x46D0, b'')
+        self.log.write('completion=status_query_sent device_result=unconfirmed')
         xml_progress(100)
-        xml_message("Update successful")
+        xml_message('Update flow completed; device final status unconfirmed')
+        return 'status_query_sent'
+
+    def run(self, firmware):
+        xml_message('Sending firmware size')
+        xml_progress(0)
+        # Bounded drain: preserve every observed frame in the log.
+        deadline = self.clock() + 0.1
+        while self.clock() < deadline:
+            frame = self.bus.recv(0)
+            if frame is None:
+                break
+            self.log.frame(frame, self.config.can)
+        self.send(0x4610, len(firmware).to_bytes(4, self.config.firmware_size_endian))
+        ack = self.wait_ack(0x4621, {0xA1})
+        if int.from_bytes(ack[1:], self.config.response_size_endian) != 128:
+            raise ProtocolError('only negotiated block size 128 is supported')
+        self.log.write('SIZE_ACK_SETTLE seconds={}'.format(self.config.size_ack_delay))
+        self.sleep(self.config.size_ack_delay)
+        xml_message('Writing firmware')
+        confirmed = 0
+        previous_ack = None
+        progress_at = self.clock()
+        for number, length, frames in blocks(firmware, self.config):
+            # Prepare payloads and CRC before entering the timed send path.
+            if number == 1 or length < 128:
+                self.log.write(block_diagnostic(number, length, frames, self.config))
+            wire_frames = [(identifier, request_payload(identifier, data, self.config))
+                           for identifier, data in frames]
+            if previous_ack is not None:
+                self.sleep(max(0, previous_ack + self.config.block_ack_delay - self.clock()))
+            self.events = []
+            starts, completed, submitted = [], None, 0
+            ack_time, status = None, 'no_ack'
+            try:
+                for identifier, data in wire_frames:
+                    if completed is not None:
+                        self.sleep(max(0, completed + self.config.frame_interval - self.clock()))
+                    starts.append(self.clock())
+                    completed = self.send(identifier, data)
+                    submitted += 1
+                response = self.wait_ack(0x4681, {0xA2},
+                                         deadline=completed + self.config.ack_timeout)
+                ack_time = self.last_rx_time
+                status = '0x{:02X}'.format(response[0])
+            except (OSError, ValueError, ProtocolError, KeyboardInterrupt) as exc:
+                status = '{}: {}'.format(type(exc).__name__, exc)
+                self.flush_frames()
+                self.log.write(block_diagnostic(number, length, frames, self.config))
+                self.log.write('BLOCK_FAILED block={} last_confirmed={} {}'.format(number, number - 1, status))
+                raise
+            finally:
+                self.flush_frames()
+                intervals = [(b - a) * 1000 for a, b in zip(starts, starts[1:])]
+                self.log.detail('BLOCK_TIMING block={} submitted={} application_timing=true '
+                                'duration_ms={} gap_min_ms={} gap_median_ms={} gap_max_ms={} '
+                                'ack_to_next_ms={} crc_to_ack_ms={} status={}'.format(
+                    number, submitted, (completed - starts[0]) * 1000 if completed is not None else None,
+                    min(intervals) if intervals else None, median(intervals) if intervals else None,
+                    max(intervals) if intervals else None,
+                    (starts[0] - previous_ack) * 1000 if previous_ack is not None else None,
+                    (ack_time - completed) * 1000 if ack_time is not None else None, status))
+            previous_ack = ack_time
+            confirmed += length
+            if self.clock() >= progress_at or confirmed == len(firmware):
+                self.log.write('Confirmed block={} bytes={}/{} progress={}%'.format(
+                    number, confirmed, len(firmware), confirmed * 90 // len(firmware)))
+                xml_progress(confirmed * 90 // len(firmware))
+                progress_at = self.clock() + 1
+        xml_message('Verifying firmware')
+        self.sleep(self.config.verify_delay)
+        self.send(0x4690, firmware_crc(firmware, self.config))
+        self.wait_ack(0x46A1, {0xA3})
+        xml_progress(95)
+        xml_message('Starting application')
+        self.sleep(self.config.restart_delay)
+        self.send(0x46B0, b'')
+        self.wait_ack(0x46C1, {10, 11})
+        return self.poll_status()
 
 
 def update(args):
@@ -1203,7 +1066,7 @@ def update(args):
         # 先在本地读取并检查固件，避免已经让设备进入升级模式后才发现文件问题。
         # Read and check the firmware locally first so file issues are found before the device enters update mode.
         firmware = read_firmware(args.file)
-        firmware_info = validate_bslbatt_firmware(firmware)
+        validate_bslbatt_firmware(firmware)
     except OSError as exc:
         xml_message("Firmware file error")
         debug(args.debug, str(exc))
@@ -1213,63 +1076,52 @@ def update(args):
         debug(args.debug, str(exc))
         return EXIT_FIRMWARE_ERROR
 
+    log = Logger(args.can_log, args.debug)
+    bus = SocketCan(can_interface)
     try:
-        # 只有文件和参数都通过后才打开 CAN；CAN 初始化失败单独返回退出码 2。
-        # Open CAN only after file and arguments pass; CAN initialization failure returns exit code 2 separately.
-        sock = open_can(can_interface)
-    except OSError as exc:
-        xml_message("CAN init failed")
-        debug(args.debug, str(exc))
-        return EXIT_CAN_INIT_ERROR
-
-    updater = BslbattFirmwareUpdater(sock, node_id, firmware, firmware_info, args.debug, args.can_log)
-    try:
-        updater.run()
+        try:
+            bus.__enter__()
+        except OSError as exc:
+            xml_message('CAN init failed')
+            log.write(str(exc))
+            return EXIT_CAN_INIT_ERROR
+        config = SimpleNamespace(can=can_interface, **UPGRADE_CONFIG)
+        BslbattFirmwareUpdater(bus, config, log).run(firmware)
         return EXIT_OK
-    # 下面的异常处理会把内部错误转换成 Venus OS 可识别的 XML 消息和退出码。
-    # The exception handling below converts internal errors to XML messages and exit codes recognized by Venus OS.
-    except NotImplementedError as exc:
-        xml_message("Update protocol is not implemented")
-        debug(args.debug, str(exc))
-        return EXIT_GENERAL_ERROR
-    except DeviceNotFoundError as exc:
-        xml_message("Device not found")
-        debug(args.debug, str(exc))
-        return EXIT_DEVICE_NOT_FOUND
-    except socket.timeout as exc:
-        xml_message("Device response timeout")
-        debug(args.debug, str(exc))
+    except TimeoutError as exc:
+        xml_message('Device response timeout')
+        log.write(str(exc))
         return EXIT_TIMEOUT
-    except MemoryErrorOnDevice as exc:
-        xml_message("Device memory error")
-        # 设备返回的错误帧详情对排查非常关键，无论是否开启 --debug 都打到 stderr。
-        # Device error-frame details are critical for troubleshooting, so always print them to stderr even without --debug.
-        print("device error: {}".format(exc), file=sys.stderr, flush=True)
-        return EXIT_MEMORY_ERROR
-    except VerifyTimeoutError as exc:
-        xml_message("Verification timeout")
-        debug(args.debug, str(exc))
-        return EXIT_VERIFY_TIMEOUT
-    except VerifyFailedError as exc:
-        xml_message("Verification failed")
-        debug(args.debug, str(exc))
-        return EXIT_VERIFY_FAILED
+    except ProtocolError as exc:
+        log.write(str(exc))
+        print('device error: {}'.format(exc), file=sys.stderr, flush=True)
+        if exc.code in (2, 8):
+            xml_message('Verification failed')
+            return EXIT_VERIFY_FAILED
+        if exc.code in (4, 6, 20):
+            xml_message('Device memory error')
+            return EXIT_MEMORY_ERROR
+        if exc.code in (1, 5, 7, 9, 18):
+            xml_message('Firmware error')
+            return EXIT_FIRMWARE_ERROR
+        xml_message('Update failed')
+        return EXIT_GENERAL_ERROR
     except OSError as exc:
-        xml_message("CAN communication failed")
-        debug(args.debug, str(exc))
+        xml_message('CAN communication failed')
+        log.write(str(exc))
         return EXIT_CAN_COMM_ERROR
-    except FirmwareError as exc:
-        xml_message("Firmware error")
-        debug(args.debug, str(exc))
-        return EXIT_FIRMWARE_ERROR
+    except KeyboardInterrupt:
+        xml_message('Update interrupted; device final status unknown')
+        return 130
     except Exception as exc:
-        xml_message("Update failed")
-        debug(args.debug, repr(exc))
+        xml_message('Update failed')
+        log.write(repr(exc))
         return EXIT_GENERAL_ERROR
     finally:
-        # 无论成功失败都关闭 CAN socket，释放接口资源。
-        # Always close the CAN socket to release interface resources, whether the update succeeds or fails.
-        sock.close()
+        try:
+            bus.__exit__()
+        finally:
+            log.close()
 
 
 def build_parser():
@@ -1304,7 +1156,7 @@ def build_parser():
     parser.add_argument(
         "--can-log",
         default="venus_firmware_update_can.log",
-        help="local file for parsed CAN RX logs during --update; use an empty value to disable",
+        help="local file for parsed CAN TX/RX logs during --update; use an empty value to disable",
     )
     return parser
 

@@ -71,20 +71,20 @@ python3 bslbatt-tool.py --list -c can0
 Update the selected device using the Venus OS style arguments:
 
 ```bash
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
 ```
 
 The explicit update flag is optional when `-f` is present, but can be used:
 
 ```bash
-python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
+python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
 ```
 
 Enable debug logs:
 
 ```bash
 python3 bslbatt-tool.py -c can0 -d
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin -d
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin -d
 ```
 
 On Venus OS images where `python` points to Python 3, the same commands can be
@@ -140,63 +140,38 @@ Current device metadata parsing:
 
 ## Firmware Update Flow
 
-Update mode validates all local inputs before opening CAN. Firmware paths must
-be absolute. If the file is a zip package, the tool runs the zip CRC check and
-requires exactly one `.bin`, `.fw`, or `.img` payload inside the package. Every
-raw firmware filename, and the firmware payload filename inside a zip package,
-must start with uppercase `BSL`. A mismatch returns firmware error code `5`
-before CAN is opened.
+Firmware paths must be absolute. Firmware filenames have no prefix restriction,
+including extensionless VRM cache names. ZIP packages must contain exactly one
+`.bin`, `.fw` or `.img` payload. ZIP CRC is checked before CAN opens. Firmware must be nonempty and at most 65535 × 128 bytes.
+For example: `-c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin`.
 
-The implemented BSLBATT CAN upgrade flow is:
+The standalone tool embeds the validated `tools/pc_update.py` protocol:
 
-1. Resolve target CAN bus and node id from `-c/-n`, or from legacy
-   `--connection`.
-2. Read and validate the firmware file.
-3. Calculate transfer size, frame count, and CRC32 for logging.
-4. Open the SocketCAN interface.
-5. Drain old control frames from the socket.
-6. Send start request `0x18A055AA` with transfer size and frame count.
-7. Wait for start ACK `0x18A0AA55`.
-8. Send firmware data frames starting at extended CAN ID `0x13000001`.
-9. Each data frame carries 7 bytes of firmware data plus a 1-byte checksum.
-10. Wait for data ACK `0x18A1AA55` after every 10 data frames.
-11. Send finish request `0x18A255AA`.
-12. Wait for finish ACK `0x18A2AA55`.
+1. Send actual byte size via extended ID `0x4610`; wait for `0x4621/A1`
+   negotiating 128-byte blocks.
+2. Send each block number (`0x4630`, little endian), sixteen 8-byte data frames
+   (`0x4650`), then CRC16/Modbus (`0x4670`); wait for `0x4681/A2`.
+   Pad the tail with `FF`. Block CRC covers all 128 data bytes; the size field is zero.
+3. Send CRC16 of the actual firmware via `0x4690`; wait for `0x46A1/A3`.
+4. Send restart `0x46B0`; wait for `0x46C1/0A` or `0B`.
+5. Wait 15 seconds and send the first `0x46D0` status query. Successful sending
+   completes the flow with exit code 0; the final device status is **unconfirmed**.
 
-The updater treats BMS error frame `0x18A3AA55` as a device memory/update
-error. Error frame details are always written to stderr because they are needed
-for diagnosis.
+Control frames are zero-padded to 8 bytes. Frame spacing is 3 ms, the initial
+size-ACK delay is 48 ms, inter-block ACK delay is 75 ms, and verification/restart
+delays are 32 ms each. ACK timeout is 30 seconds. Only one upgrade attempt is
+performed; any error or timeout ends it without automatic retry.
 
-Progress XML emitted during update, abridged:
-
-```xml
-<message type="normal">Checking firmware</message>
-<progress level="0" />
-<message type="normal">Locating device</message>
-<progress level="5" />
-<message type="normal">Entering bootloader</message>
-<progress level="10" />
-<message type="normal">Erasing device</message>
-<progress level="20" />
-<message type="normal">Writing firmware</message>
-<progress level="21" />
-...
-<progress level="90" />
-<message type="normal">Verifying firmware</message>
-<progress level="98" />
-<message type="normal">Starting application</message>
-<progress level="100" />
-<message type="normal">Update successful</message>
-```
-
-Current limitations: `locate_device()`, `erase_flash()`, and
-`verify_firmware()` are protocol placeholders. The `BSL` filename-prefix check
-blocks obvious firmware for other products, but it does not validate raw BIN
-content, target model, hardware revision, version path, CRC, or signature.
-Only firmware obtained through the official BSLBATT delivery channel may be
-used.
+stdout contains XML only: stage messages and progress from 0 through 90 during
+transfer, 95 after CRC verification, and 100 after the first status query is sent.
+The final message is `Update flow completed; device final status unconfirmed`.
+`--can-log` records TX/RX and timing; `--debug` writes diagnostics to stderr.
+Log failures do not abort the transfer. These checks do not validate
+hardware compatibility or firmware authenticity.
 
 ## Verified Test Status
+
+The records below describe the historical protocol and are not acceptance evidence for the new protocol.
 
 The formal single-device tests are recorded in `logs/01_*.log` through
 `logs/09_*.log`:

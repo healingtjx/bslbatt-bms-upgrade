@@ -68,20 +68,20 @@ python3 bslbatt-tool.py --list -c can0
 按 Venus OS 调用方式升级选中设备：
 
 ```bash
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
 ```
 
 传入 `-f` 时会自动推断为升级模式，也可以显式加 `--update`：
 
 ```bash
-python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin
+python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
 ```
 
 开启调试日志：
 
 ```bash
 python3 bslbatt-tool.py -c can0 -d
-python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/BSL-V1.246.bin -d
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin -d
 ```
 
 如果 Venus OS 镜像中的 `python` 指向 Python 3，也可以直接用 `python` 调用同样
@@ -133,57 +133,33 @@ BSLBATT 身份文本、BSLBATT 设备标记帧，或看到足够的核心 BMS-CA
 
 ## 固件升级流程
 
-升级模式会先校验本地参数和文件，再打开 CAN。固件路径必须是绝对路径。如果上传
-文件是 zip 包，工具会先执行 zip CRC 检查，并要求包内只有一个 `.bin`、`.fw`
-或 `.img` 固件载荷。所有裸固件文件名以及 zip 包内的固件载荷文件名都必须以
-大写 `BSL` 开头；不符合时在打开 CAN 前返回固件不兼容错误码 `5`。
+固件路径必须为绝对路径。文件名没有前缀限制，支持 VRM 重命名后的无扩展名缓存文件。
+ZIP 内仍需包含唯一的 `.bin`、`.fw` 或 `.img` 载荷。打开 CAN 前检查 ZIP CRC、固件非空以及大小不超过
+`65535 × 128` 字节。调用示例：
+`-c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin`。
 
-当前已实现的 BSLBATT CAN 升级流程：
+工具内置 `tools/pc_update.py` 已验证的新协议，仍支持单文件部署：
 
-1. 从 `-c/-n` 解析目标 CAN 总线和节点 ID，或从兼容参数 `--connection` 解析。
-2. 读取并校验固件文件。
-3. 计算传输大小、帧数和 CRC32，用于日志。
-4. 打开 SocketCAN 接口。
-5. 清空旧控制帧，避免干扰本次升级。
-6. 发送开始请求 `0x18A055AA`，数据包含传输大小和总帧数。
-7. 等待开始 ACK `0x18A0AA55`。
-8. 从扩展 CAN ID `0x13000001` 开始发送固件数据帧。
-9. 每个数据帧携带 7 字节固件数据和 1 字节校验和。
-10. 每 10 个数据帧等待一次数据 ACK `0x18A1AA55`。
-11. 发送结束请求 `0x18A255AA`。
-12. 等待结束 ACK `0x18A2AA55`。
+1. 通过扩展帧 `0x4610` 发送实际固件长度，等待 `0x4621/A1` 协商 128 字节分包。
+2. 每包发送小端包号 `0x4630`、16 帧 `0x4650` 数据和 `0x4670` CRC16/Modbus，
+   等待 `0x4681/A2`。尾包用 `FF` 补齐，分包 CRC 覆盖补齐后的 128 字节，大小字段为零。
+3. 通过 `0x4690` 发送实际固件内容的 CRC16，等待 `0x46A1/A3`。
+4. 发送重启命令 `0x46B0`，等待 `0x46C1/0A` 或 `0B`。
+5. 等待 15 秒，成功发送首次 `0x46D0` 后进度为 100%，返回码为 0。
+   此判据表示流程完成，**设备最终状态未确认**，不等待 `0D`。
 
-升级器会把 BMS 错误帧 `0x18A3AA55` 视为设备存储器或升级异常。错误帧详情会
-始终输出到 stderr，便于排查。
+控制帧补零至 8 字节；包内帧间隔为 3ms，大小 ACK 后等待 48ms，分包 ACK 后等待
+75ms，校验及重启前各等待 32ms；ACK 超时为 30 秒。
+**升级仅执行一轮，错误或超时即结束，不自动重试。**
 
-升级过程中会输出 XML 进度，以下为省略后的示例：
-
-```xml
-<message type="normal">Checking firmware</message>
-<progress level="0" />
-<message type="normal">Locating device</message>
-<progress level="5" />
-<message type="normal">Entering bootloader</message>
-<progress level="10" />
-<message type="normal">Erasing device</message>
-<progress level="20" />
-<message type="normal">Writing firmware</message>
-<progress level="21" />
-...
-<progress level="90" />
-<message type="normal">Verifying firmware</message>
-<progress level="98" />
-<message type="normal">Starting application</message>
-<progress level="100" />
-<message type="normal">Update successful</message>
-```
-
-当前限制：`locate_device()`、`erase_flash()` 和 `verify_firmware()` 仍是协议
-占位步骤。`BSL` 文件名前缀可以阻止明显的其他产品固件，但不会校验裸 BIN 内容、
-目标型号、硬件版本、版本路径、CRC 或签名。升级时只能使用 BSLBATT 正式渠道提供
-的固件。
+stdout 仅输出 XML 消息及进度：传输阶段 0～90，CRC 校验通过后 95，首次状态查询
+发送成功后 100。完成消息为 `Update flow completed; device final status unconfirmed`。
+`--can-log` 记录收发帧及时序，`--debug` 将调试信息写 stderr；日志写入失败不终止升级。
+这些检查不代表已验证固件与硬件的兼容性或固件真实性。
 
 ## 已验证测试状态
+
+以下记录属于历史旧协议，不作为新协议移植的验收结果。
 
 正式单设备测试记录位于 `logs/01_*.log` 至 `logs/09_*.log`：
 

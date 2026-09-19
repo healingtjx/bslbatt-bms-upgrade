@@ -83,6 +83,30 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaises(u.FirmwareError):
                 u.validate_bslbatt_firmware(data)
 
+    def test_disabled_frame_logging_handles_busy_bus(self):
+        for debug_enabled in (False, True):
+            with self.subTest(debug=debug_enabled):
+                updater, bus, _, clock = self.make_session()
+                updater.log = u.Logger('', debug_enabled)
+                bus.queue.append(ack(0x355, [50, 0], extended=False))
+                bus.responses[0x4670] = [ack(0x355, [50, 0], extended=False)] * 4200 + [
+                    ack(0x4681, [0xA2])]
+
+                def recv(timeout):
+                    clock.sleep(min(timeout, 0.001))
+                    if bus.queue:
+                        return bus.queue.pop(0)
+                    clock.sleep(max(0, timeout - 0.001))
+                    return None
+
+                bus.recv = recv
+                with patch.object(updater.log, 'frame_line') as format_frame, \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(updater.run(b'x'), 'status_query_sent')
+                    format_frame.assert_not_called()
+                self.assertIsNone(updater.events)
+
 
 class IntegrationTests(unittest.TestCase):
     def test_list_receives_frames_with_and_without_debug(self):

@@ -47,6 +47,8 @@ class Clock:
 
 
 class Log:
+    frames_enabled = True
+
     def __init__(self):
         self.lines, self.frames = [], []
 

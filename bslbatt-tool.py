@@ -739,6 +739,10 @@ class Logger:
             except OSError as exc:
                 print('CAN log unavailable: {}'.format(exc), file=sys.stderr, flush=True)
 
+    @property
+    def frames_enabled(self):
+        return self.file is not None or (self.debug_enabled and not self.quiet_frames)
+
     def persist(self, text):
         if self.file:
             try:
@@ -768,7 +772,7 @@ class Logger:
             frame.get('monotonic', 'unknown'))
 
     def batch_frames(self, frames, interface=''):
-        if not frames:
+        if not self.frames_enabled or not frames:
             return
         text = '\n'.join(self.frame_line(f, interface) for f in frames)
         if not self.quiet_frames:
@@ -905,6 +909,8 @@ class BslbattFirmwareUpdater:
         self.last_rx_time = None
 
     def record_frame(self, frame):
+        if not self.log.frames_enabled:
+            return
         frame = dict(frame, wall_time=time.time(), monotonic=self.clock())
         if self.events is None:
             self.log.frame(frame, self.config.can)
@@ -987,7 +993,7 @@ class BslbattFirmwareUpdater:
                            for identifier, data in frames]
             if previous_ack is not None:
                 self.sleep(max(0, previous_ack + self.config.block_ack_delay - self.clock()))
-            self.events = []
+            self.events = [] if self.log.frames_enabled else None
             starts, completed, submitted = [], None, 0
             ack_time, status = None, 'no_ack'
             try:

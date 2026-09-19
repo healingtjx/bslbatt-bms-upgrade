@@ -1,5 +1,7 @@
 # BSLBATT Venus OS 对接工具
 
+[English](README.md) | 简体中文
+
 `bslbatt-tool.py` 是一个合并后的 Victron GX / Venus OS 远程固件升级对接工具，
 用于 BSLBATT BMS 设备，支持 Venus OS 需要的两个操作：
 
@@ -20,22 +22,12 @@ XML；调试日志和设备错误详情输出到 stderr。
 - 固件文件名使用 `V1.245`/`V1.246`，设备发现按 GX 设备显示规则输出
   `12.45`/`12.46`。
 
-测试固件不通过公开 Git 仓库发布。`BSL-V1.245.bin` 和
-`BSL-V1.246.bin` 将随最终交付邮件作为附件发送给 Victron，并在邮件中提供以下
-SHA-256：
-
-| 文件 | 大小 | SHA-256 |
-|------|-----:|--------|
-| `BSL-V1.245.bin` | 106,020 bytes | `8a7efc20671a1bbc5d6a0cf71c6141c6ba6e3a48a2fb61860b1c3cec6bff3f7e` |
-| `BSL-V1.246.bin` | 106,020 bytes | `ce8eb9428d4d91ac487aeabd2e9f93c3150ddf05333639c95ea2d18c9d083049` |
-
 ## 运行要求
 
-- Victron GX / Venus OS 上的 Python 3。
+- Victron GX / Venus OS 上的 Python 3，仅依赖 Python 标准库。
 - Linux SocketCAN 支持。
 - 已配置的 CAN 接口，例如 `can0` 或 `vecan0`。
-- GX 上选中的 CAN 口必须提前配置成 BSLBATT 设备要求的波特率，例如
-  下方实测案例中的 `500 kbit/s`，或目标电池实际要求的波特率。
+- GX 上选中的 CAN 口必须提前配置成 BSLBATT 设备要求的波特率，以目标电池实际要求为准。
 
 脚本不会修改 CAN 波特率，也不会负责启停 CAN 接口。
 
@@ -77,6 +69,12 @@ python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1
 python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
 ```
 
+也可将完整连接字符串作为 `-c` 传入，此时无需单独传 `-n`：
+
+```bash
+python3 bslbatt-tool.py -u -c socketcan:can0/0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
+```
+
 开启调试日志：
 
 ```bash
@@ -94,12 +92,25 @@ python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1
 | `-l`, `--list` | 列表 | 否 | 强制执行设备列表模式。不传 `--list`/`--update` 时，除非提供 `-f`，否则默认推断为列表模式。 |
 | `-u`, `--update` | 升级 | 否 | 强制执行固件升级模式。提供 `-f` 时也会自动推断为升级模式。 |
 | `-c`, `--can` | 两者 | 列表否，升级是 | SocketCAN 接口，例如 `can0` 或 `vecan0`。列表模式不传时扫描所有可用的 `can*`/`vecan*` 接口。 |
-| `-n`, `--node-id` | 升级 | 是 | 设备列表 XML 返回的 CAN `connection-id`。当前 BSLBATT 单设备协议只接受 `0x0`。 |
+| `-n`, `--node-id` | 升级 | 使用接口名时必填 | 设备列表 XML 返回的 CAN `connection-id`。当前 BSLBATT 单设备协议只接受 `0x0`；使用完整连接字符串时可省略。 |
 | `--timeout` | 列表 | 否 | 被动扫描时长，单位秒。默认：`3.0`。 |
 | `--connection` | 升级 | 否 | 兼容旧脚本的连接字符串，例如 `socketcan:can0/0x0`。Venus OS / VRM 优先使用 `-c/-n`。 |
 | `-f`, `--file` | 升级 | 是 | 上传到 GX / VRM 缓存目录的固件文件绝对路径。支持原始固件文件和 zip 包。 |
 | `-d`, `--debug` | 两者 | 否 | 将调试日志输出到 stderr。 |
 | `--can-log` | 升级 | 否 | 升级期间解析后的 CAN 收发日志文件。默认：`venus_firmware_update_can.log`。传空值可关闭。 |
+
+## 日志
+
+调试输出默认关闭，`-d` 启用 stderr 诊断。升级时 CAN 文件日志仍默认追加写入当前
+工作目录的 `venus_firmware_update_can.log`；可用 `--can-log /data/bslbatt-can.log`
+指定位置，或用 `--can-log ""` 关闭文件日志：
+
+```bash
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin --can-log ""
+```
+
+关闭文件日志后，升级器不再收集和格式化逐帧日志；单独启用 `-d` 也不会向 stderr
+输出逐帧明细。设备错误仍会输出到 stderr，stdout 保持 XML 消息及进度输出。
 
 ## 设备发现
 
@@ -138,7 +149,7 @@ ZIP 内仍需包含唯一的 `.bin`、`.fw` 或 `.img` 载荷。打开 CAN 前�
 `65535 × 128` 字节。调用示例：
 `-c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin`。
 
-工具内置 `tools/pc_update.py` 已验证的新协议，仍支持单文件部署：
+`bslbatt-tool.py` 内置升级协议，支持单文件部署，执行流程如下：
 
 1. 通过扩展帧 `0x4610` 发送实际固件长度，等待 `0x4621/A1` 协商 128 字节分包。
 2. 每包发送小端包号 `0x4630`、16 帧 `0x4650` 数据和 `0x4670` CRC16/Modbus，
@@ -156,89 +167,6 @@ stdout 仅输出 XML 消息及进度：传输阶段 0～90，CRC 校验通过后
 发送成功后 100。完成消息为 `Update flow completed; device final status unconfirmed`。
 `--can-log` 记录收发帧及时序，`--debug` 将调试信息写 stderr；日志写入失败不终止升级。
 这些检查不代表已验证固件与硬件的兼容性或固件真实性。
-
-## 已验证测试状态
-
-以下记录属于历史旧协议，不作为新协议移植的验收结果。
-
-正式单设备测试记录位于 `logs/01_*.log` 至 `logs/09_*.log`：
-
-- `V1.245 → V1.246`、`V1.246 → V1.245` 和重复升级均成功，升级后设备发现
-  分别报告 `12.45` 或 `12.46`。
-- ZIP 内固件成员损坏时，在打开 CAN 前返回错误码 `9`。
-- 固件文件名不是大写 `BSL` 开头时，在打开 CAN 前返回错误码 `5`。
-- 约 52% 时断开 CAN，工具返回超时错误码 `4`；BMS 停留在 bootloader，必须
-  重启 BMS 后应用 CAN 通信才恢复。
-- 单设备正常总线负载下通过 400 秒测试：CAN 传输耗时 `373.688` 秒，保守完整
-  耗时上限约为 `385.714` 秒。
-- 多模块未测试：当前只确认一个逻辑设备 `can0/0x0`，模块升级机制尚未定义。
-
-## GX 历史开发测试案例
-
-项目中保留了早期 GX 终端记录 `logs/upgrade_case.log`。其中的版本字符串保持历史
-显示规则原样。该记录是从 1.23 升级到 1.24 的开发测试，低于当前正式支持的最低
-远程升级版本 `V1.245`，因此只作为历史实现证据，不作为本次发布的正式验收结果。
-案例运行在 CCGX 上，当时 `can0` 已经处于 UP 状态：
-
-```text
-3: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 100
-    can state ERROR-ACTIVE (berr-counter tx 0 rx 0) restart-ms 100
-          bitrate 500000 sample-point 0.846
-```
-
-升级前，列表模式在 `can0` 上发现了一个 BSLBATT 设备：
-
-```bash
-python bslbatt-tool.py -c can0
-```
-
-```xml
-<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
-```
-
-升级命令使用列表 XML 中的 `connection-id` 作为 `-n`，使用 VRM 缓存目录中的固件
-文件作为 `-f`：
-
-```bash
-python bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/124.bin
-```
-
-升级过程中 stdout 从 `Checking firmware` 到 `Update successful` 持续输出 Venus
-XML。写入阶段会输出 `21` 到 `90` 的递增进度。
-
-升级后，列表模式报告同一设备固件版本变为 `1.24`：
-
-```xml
-<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
-```
-
-其他实测输出：
-
-当元数据帧不完整时，列表模式仍可以报告已检测到的 BSLBATT 候选设备：
-
-```xml
-<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
-```
-
-固件路径不存在时：
-
-```bash
-python /opt/bs/bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/1123123.bin
-```
-
-```xml
-<message type="normal">Firmware path error</message>
-```
-
-设备 ID 不是当前单设备协议支持的 `0x0` 时：
-
-```bash
-python /opt/bs/bslbatt-tool.py -c can0 -n 0x2 -f /data/vrmfilescache/48100.bin
-```
-
-```xml
-<message type="normal">Device id error</message>
-```
 
 ## 检查 GX 上可用的 CAN 网关
 
@@ -259,27 +187,18 @@ python3 bslbatt-tool.py -c can0
 
 | 错误码 | 说明 |
 |--------|------|
-| 0 | 成功 |
+| 0 | 列表完成；升级流程完成，但设备最终状态未确认 |
 | 1 | 通用错误 |
 | 2 | CAN 初始化错误 |
 | 3 | CAN 通信错误 |
 | 4 | 超时 |
 | 5 | 固件错误或固件不兼容 |
 | 6 | 参数错误 |
-| 7 | 未找到设备 |
+| 7 | 保留：未找到设备 |
 | 8 | BMS 上报的设备存储器或升级异常 |
 | 9 | 固件文件错误 |
 | 10 | 升级验证失败 |
-| 11 | 升级验证超时 |
+| 11 | 保留：升级验证超时 |
 
-列表模式使用错误码 `0`、`1`、`2`、`3` 和 `6`。升级模式可能使用上表中的全部
-错误码。
-
-## 最终交付检查项
-
-- [x] 完成本轮约定的代码修改和单设备硬件测试。
-- [x] 整理 01～09 测试日志，并将多模块用例明确标记为阻塞/未测试。
-- [x] 将测试固件保存在已忽略的本地 `doc/firmware/` 目录，不提交到公开仓库。
-- [ ] 补齐 `doc/Victron远程固件升级交付任务计划.md` 中列出的产品资料和英文
-  交付文档。
-- [ ] 复核最终提交并创建、推送正式版本标签。
+列表模式使用错误码 `0`、`1`、`2`、`3` 和 `6`。当前升级流程不返回保留码 `7`、`11`，
+ACK 超时统一返回 `4`。升级期间按 Ctrl+C 中断返回 `130`；命令行解析错误由 argparse 返回 `2`。

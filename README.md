@@ -1,5 +1,7 @@
 # BSLBATT Venus OS Tool
 
+English | [简体中文](README_CN.md)
+
 `bslbatt-tool.py` is a combined Victron GX / Venus OS remote firmware update
 tool for BSLBATT BMS devices. It supports both Venus OS operations:
 
@@ -21,22 +23,12 @@ to stderr.
 - Firmware filenames use `V1.245`/`V1.246`; device discovery reports these
   versions as `12.45`/`12.46`, matching the GX device display.
 
-The test firmware binaries are not distributed through the public Git
-repository. `BSL-V1.245.bin` and `BSL-V1.246.bin` are delivered to Victron as
-attachments to the handover email, together with their SHA-256 values:
-
-| File | Size | SHA-256 |
-|------|-----:|--------|
-| `BSL-V1.245.bin` | 106,020 bytes | `8a7efc20671a1bbc5d6a0cf71c6141c6ba6e3a48a2fb61860b1c3cec6bff3f7e` |
-| `BSL-V1.246.bin` | 106,020 bytes | `ce8eb9428d4d91ac487aeabd2e9f93c3150ddf05333639c95ea2d18c9d083049` |
-
 ## Requirements
 
-- Python 3 on Victron GX / Venus OS.
+- Python 3 on Victron GX / Venus OS; only the Python standard library is required.
 - Linux SocketCAN support.
 - A configured CAN interface such as `can0` or `vecan0`.
-- The selected GX CAN port must already use the BSLBATT-required CAN bitrate,
-  for example `500 kbit/s` in the verified case below, or whatever bitrate is
+- The selected GX CAN port must already use the BSLBATT-required CAN bitrate
   required by the target battery.
 
 The script does not change CAN bitrate and does not bring CAN interfaces
@@ -80,6 +72,12 @@ The explicit update flag is optional when `-f` is present, but can be used:
 python3 bslbatt-tool.py -u -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
 ```
 
+You can also pass the full connection string as `-c`, without a separate `-n`:
+
+```bash
+python3 bslbatt-tool.py -u -c socketcan:can0/0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin
+```
+
 Enable debug logs:
 
 ```bash
@@ -97,12 +95,27 @@ called with `python`.
 | `-l`, `--list` | List | No | Forces device listing mode. If neither `--list` nor `--update` is provided, listing is inferred unless `-f` is present. |
 | `-u`, `--update` | Update | No | Forces firmware update mode. Update mode is also inferred when `-f` is provided. |
 | `-c`, `--can` | Both | List: no, update: yes | SocketCAN interface, for example `can0` or `vecan0`. In list mode, omitted means scan all available `can*`/`vecan*` interfaces. |
-| `-n`, `--node-id` | Update | Yes | CAN `connection-id` returned from list XML. The current BSLBATT single-device protocol only accepts `0x0`. |
+| `-n`, `--node-id` | Update | With a bare interface name | CAN `connection-id` returned from list XML. The current BSLBATT single-device protocol only accepts `0x0`; omit when using a full connection string. |
 | `--timeout` | List | No | Passive discovery timeout in seconds. Default: `3.0`. |
 | `--connection` | Update | No | Legacy connection string, for example `socketcan:can0/0x0`. Prefer `-c/-n` for Venus OS / VRM. |
 | `-f`, `--file` | Update | Yes | Absolute path of the firmware file uploaded to GX / VRM cache. Raw firmware files and zip packages are accepted. |
 | `-d`, `--debug` | Both | No | Writes debug logs to stderr. |
 | `--can-log` | Update | No | Parsed CAN RX/update log file. Default: `venus_firmware_update_can.log`. Use an empty value to disable. |
+
+## Logging
+
+Debug output is disabled by default; `-d` enables stderr diagnostics. During an
+update, CAN file logging still defaults to appending to
+`venus_firmware_update_can.log` in the current working directory. Set
+`--can-log /data/bslbatt-can.log` to choose a location, or disable file logging:
+
+```bash
+python3 bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin --can-log ""
+```
+
+With file logging disabled, the updater skips per-frame log collection and
+formatting. Enabling `-d` alone does not print individual frames to stderr.
+Device errors still go to stderr; stdout retains XML messages and progress.
 
 ## Device Discovery
 
@@ -145,7 +158,7 @@ including extensionless VRM cache names. ZIP packages must contain exactly one
 `.bin`, `.fw` or `.img` payload. ZIP CRC is checked before CAN opens. Firmware must be nonempty and at most 65535 × 128 bytes.
 For example: `-c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.bin`.
 
-The standalone tool embeds the validated `tools/pc_update.py` protocol:
+`bslbatt-tool.py` embeds the update protocol and supports single-file deployment:
 
 1. Send actual byte size via extended ID `0x4610`; wait for `0x4621/A1`
    negotiating 128-byte blocks.
@@ -169,94 +182,6 @@ The final message is `Update flow completed; device final status unconfirmed`.
 Log failures do not abort the transfer. These checks do not validate
 hardware compatibility or firmware authenticity.
 
-## Verified Test Status
-
-The records below describe the historical protocol and are not acceptance evidence for the new protocol.
-
-The formal single-device tests are recorded in `logs/01_*.log` through
-`logs/09_*.log`:
-
-- `V1.245 -> V1.246`, `V1.246 -> V1.245`, and repeated upgrades completed
-  successfully, and device discovery reported `12.45` or `12.46` afterward.
-- A corrupted ZIP member was rejected with exit code `9` before CAN was opened.
-- A firmware filename not starting with uppercase `BSL` was rejected with exit
-  code `5` before CAN was opened.
-- Disconnecting CAN at approximately 52% returned timeout code `4`. The BMS
-  remained in its bootloader and required a BMS restart before application CAN
-  communication recovered.
-- The single-device normal-load 400-second case passed. CAN transfer time was
-  `373.688` seconds and the conservative completion bound was approximately
-  `385.714` seconds.
-- Multi-module behavior was not tested because only one logical device at
-  `can0/0x0` was confirmed and the module update mechanism is not defined.
-
-## Historical GX Development Case
-
-The project includes an earlier GX terminal record in `logs/upgrade_case.log`.
-It preserves the version strings produced by the historical display rule and
-records a development test from version 1.23 to 1.24, which is below the
-currently supported minimum remote-update version `V1.245`. It is retained as
-historical implementation evidence and is not the formal release acceptance
-test. The case was run on a CCGX where `can0` was already up:
-
-```text
-3: can0: <NOARP,UP,LOWER_UP,ECHO> mtu 16 qdisc pfifo_fast state UP mode DEFAULT group default qlen 100
-    can state ERROR-ACTIVE (berr-counter tx 0 rx 0) restart-ms 100
-          bitrate 500000 sample-point 0.846
-```
-
-Before the update, list mode found one BSLBATT device on `can0`:
-
-```bash
-python bslbatt-tool.py -c can0
-```
-
-```xml
-<device serial="BSLBATT-can0" version="1.23" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
-```
-
-The update command used the XML `connection-id` value as `-n` and the VRM cache
-file as `-f`:
-
-```bash
-python bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/124.bin
-```
-
-The update printed Venus XML progress from firmware checking through
-`Update successful`. During writing it emitted incremental progress levels
-`21` through `90`.
-
-After the update, list mode reported the same device at firmware `1.24`:
-
-```xml
-<device serial="BSLBATT-can0" version="1.24" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
-```
-
-Additional observed outputs:
-
-If metadata frames are incomplete, list mode can still report a detected
-BSLBATT candidate:
-
-```xml
-<device serial="BSLBATT-can0" version="unknown" description="BSLBATT" id="0xB021" type="bslbatt" connection-type="can" connection-id="0x0" connection="socketcan:can0/0x0" updatable="True" />
-```
-
-```bash
-python /opt/bs/bslbatt-tool.py -c can0 -n 0x0 -f /data/vrmfilescache/1123123.bin
-```
-
-```xml
-<message type="normal">Firmware path error</message>
-```
-
-```bash
-python /opt/bs/bslbatt-tool.py -c can0 -n 0x2 -f /data/vrmfilescache/48100.bin
-```
-
-```xml
-<message type="normal">Device id error</message>
-```
-
 ## Check Available CAN Gateway
 
 On GX, `vup` can show which SocketCAN gateway is available:
@@ -276,29 +201,19 @@ python3 bslbatt-tool.py -c can0
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success |
+| 0 | Listing completed; update flow completed with device final status unconfirmed |
 | 1 | General error |
 | 2 | CAN init error |
 | 3 | CAN communication error |
 | 4 | Timeout |
 | 5 | Firmware error or incompatible firmware |
 | 6 | Argument error |
-| 7 | Device not found |
+| 7 | Reserved: device not found |
 | 8 | Device memory/update error reported by BMS |
 | 9 | Firmware file error |
 | 10 | Verification failed |
-| 11 | Verification timeout |
+| 11 | Reserved: verification timeout |
 
-List mode uses codes `0`, `1`, `2`, `3`, and `6`. Update mode may use all codes
-listed above.
-
-## Final Delivery Checklist
-
-- [x] Complete the agreed code changes and single-device hardware tests.
-- [x] Record test cases 01 through 09, with the multi-module case explicitly
-  marked blocked/not tested.
-- [x] Keep test firmware under the ignored local `doc/firmware/` directory and
-  out of the public Git repository.
-- [ ] Complete the product metadata and English delivery documents listed in
-  `doc/Victron远程固件升级交付任务计划.md`.
-- [ ] Review the final commit and create/push the release tag.
+List mode uses codes `0`, `1`, `2`, `3`, and `6`. The current update flow does not
+return reserved codes `7` or `11`; ACK timeouts return `4`. Ctrl+C during an update
+returns `130`; argparse returns `2` for command-line parsing errors.

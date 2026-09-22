@@ -24,6 +24,7 @@ import html
 import os
 import re
 import select
+import signal
 import socket
 import struct
 import subprocess
@@ -54,6 +55,8 @@ DEVICE_DESCRIPTION = "BSLBATT BMS"
 DEVICE_FALLBACK_NAME = "BSLBATT"
 DEFAULT_NODE_ID = 0
 DEFAULT_NODE_ID_TEXT = "0x{:X}".format(DEFAULT_NODE_ID)
+SERVICE_DIR = "/service"
+CAN_BMS_SERVICE_PREFIX = "can-bus-bms."
 
 CAN_ID_LIMITS = 0x351
 CAN_ID_SOC = 0x355
@@ -123,6 +126,33 @@ def debug(enabled, message):
     Write debug logs only to stderr to avoid breaking the XML protocol on stdout."""
     if enabled:
         print(message, file=sys.stderr, flush=True)
+
+
+def can_bms_service_path(can_interface):
+    """Return the Venus OS service path that emits BMS frames on this CAN interface."""
+    return os.path.join(SERVICE_DIR, CAN_BMS_SERVICE_PREFIX + can_interface)
+
+
+def stop_can_service(can_interface, debug_enabled=False):
+    """Stop the CAN-BMS producer so its 0x305/0x307 frames cannot disturb an update."""
+    path = can_bms_service_path(can_interface)
+    if not os.path.isdir(path):
+        debug(debug_enabled, "skip stop, service not found: {}".format(path))
+        return None
+    debug(debug_enabled, "+ svc -d {}".format(path))
+    subprocess.run(["svc", "-d", path], check=True)
+    return path
+
+
+def restore_can_service(path, debug_enabled=False):
+    """Restore a CAN-BMS service stopped by stop_can_service; restoration is best effort."""
+    if not path:
+        return
+    try:
+        debug(debug_enabled, "+ svc -u {}".format(path))
+        subprocess.run(["svc", "-u", path], check=False)
+    except Exception as exc:
+        debug(debug_enabled, "restore service {} failed: {}".format(path, exc))
 
 
 def xml_escape(value):
@@ -601,7 +631,7 @@ def read_firmware(path):
     return data
 
 
-# Wire settings and pacing matched to the captured CAN Update log.
+# Wire settings and pacing matched to the successful CAN Update capture.
 UPGRADE_CONFIG = {
     'block_size_includes_number': False,
     'block_size_field': 'zero',
@@ -1083,6 +1113,20 @@ def update(args):
         debug(args.debug, str(exc))
         return EXIT_FIRMWARE_ERROR
 
+    try:
+        stopped_service = stop_can_service(can_interface, args.debug)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        xml_message("CAN init failed")
+        debug(args.debug, "stop CAN service failed: {}".format(exc))
+        return EXIT_CAN_INIT_ERROR
+
+    def restore_on_signal(signum, _frame):
+        restore_can_service(stopped_service, args.debug)
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    previous_sigint = signal.signal(signal.SIGINT, restore_on_signal)
+    previous_sigterm = signal.signal(signal.SIGTERM, restore_on_signal)
     log = Logger(args.can_log, args.debug)
     bus = SocketCan(can_interface)
     try:
@@ -1128,7 +1172,12 @@ def update(args):
         try:
             bus.__exit__()
         finally:
-            log.close()
+            try:
+                log.close()
+            finally:
+                signal.signal(signal.SIGINT, previous_sigint)
+                signal.signal(signal.SIGTERM, previous_sigterm)
+                restore_can_service(stopped_service, args.debug)
 
 
 def build_parser():

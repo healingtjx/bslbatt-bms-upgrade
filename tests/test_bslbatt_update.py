@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 import xml.etree.ElementTree as ET
 import zipfile
 
@@ -255,6 +255,38 @@ class IntegrationTests(unittest.TestCase):
                 factory.return_value.__enter__.side_effect = OSError('bind failed')
                 self.assertEqual(u.update(self.args(path)), 2)
                 factory.return_value.__exit__.assert_called_once()
+
+    def test_update_stops_and_restores_selected_can_service_on_all_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'Ptest.bin'
+            path.write_bytes(b'x')
+            service = '/service/can-bus-bms.can0'
+            for error, exit_code in ((None, 0), (TimeoutError('timeout'), 4),
+                                     (KeyboardInterrupt(), 130)):
+                with self.subTest(exit_code=exit_code), \
+                        patch.object(u.os.path, 'isdir', return_value=True), \
+                        patch.object(u.subprocess, 'run') as run_service, \
+                        patch.object(u, 'SocketCan'), \
+                        patch.object(u.BslbattFirmwareUpdater, 'run', side_effect=error), \
+                        contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(u.update(self.args(path)), exit_code)
+                self.assertEqual(run_service.call_args_list, [
+                    call(['svc', '-d', service], check=True),
+                    call(['svc', '-u', service], check=False),
+                ])
+
+    def test_service_stop_failure_prevents_can_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'Ptest.bin'
+            path.write_bytes(b'x')
+            with patch.object(u.os.path, 'isdir', return_value=True), \
+                    patch.object(u.subprocess, 'run', side_effect=OSError('svc missing')), \
+                    patch.object(u, 'SocketCan') as factory, \
+                    contextlib.redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(u.update(self.args(path)), 2)
+            factory.assert_not_called()
+            self.assertIn('CAN init failed', output.getvalue())
 
     def test_protocol_errors_use_english_public_messages_and_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:

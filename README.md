@@ -170,13 +170,18 @@ For example: `-c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.b
 5. Wait 15 seconds and send the first `0x46D0` status query. Successful sending
    completes the flow with exit code 0; the final device status is **unconfirmed**.
 
-Control frames are zero-padded to 8 bytes. Following typical captured timings,
-frame spacing is 2 ms, the initial size-ACK delay is 48 ms, inter-block ACK delay
-is 47 ms, and verification/restart delays are 32 ms each. Other stages have a
+Control frames are zero-padded to 8 bytes. Following the successful reference
+capture, frame spacing is 2 ms, the initial size-ACK delay is 48 ms, inter-block
+ACK delay is 47 ms, and verification/restart delays are 32 ms each. Other stages have a
 300-second ACK timeout. Each block is sent exactly once. After sending its block
 CRC, wait up to 300 seconds for `0x4681/A2`; a timeout or explicit device error
 aborts the upgrade without retransmitting the block. Received frames are logged
 in bounded batches so busy CAN traffic cannot overflow the log buffer.
+
+Before opening CAN for an update, the tool temporarily stops the matching Venus
+OS `can-bus-bms.<interface>` service so its periodic `0x305/0x307` frames cannot
+disturb the bootloader transfer. The service is restored after success, failure,
+timeout, Ctrl+C, or SIGTERM. If the service directory is absent, this step is skipped.
 
 stdout contains XML only: stage messages and progress from 0 through 90 during
 transfer, 95 after CRC verification, and 100 after the first status query is sent.

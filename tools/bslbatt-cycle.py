@@ -8,10 +8,12 @@ import importlib.util
 from pathlib import Path
 import sys
 import time
+import traceback
 
 
 FIRMWARES = ('P41288V110-41289-1.51T-000.bin',
              'P41288V110-41289-1.52T-000.bin')
+DEFAULT_LOG_DIR = Path('/opt/victronenergy/mqtt-rpc/thirdparty/bslbatt/logs')
 
 
 def confirmed_updater(module, status_timeout):
@@ -56,11 +58,13 @@ def run_cycles(module, args, directory):
     run_dir = args.log_dir / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     run_dir.mkdir(parents=True)
     round_number = 0
-    first = 0 if args.start == '1.51' else 1
+    first = args.start
     with (run_dir / 'console.log').open('w', encoding='utf-8') as console:
         with contextlib.redirect_stdout(Tee(sys.stdout, console)), \
                 contextlib.redirect_stderr(Tee(sys.stderr, console)):
             print('Logs: {}'.format(run_dir), flush=True)
+            print('Cycle settings: can={} start={} rounds={} interval={} status_timeout={}'.format(
+                args.can, args.start, args.rounds, args.interval, args.status_timeout), flush=True)
             try:
                 while args.rounds == 0 or round_number < args.rounds:
                     firmware = directory / FIRMWARES[(first + round_number) % 2]
@@ -68,6 +72,7 @@ def run_cycles(module, args, directory):
                     can_log = run_dir / 'round-{:04d}-{}.log'.format(round_number, firmware.stem)
                     print('{} ROUND {} START {}'.format(datetime.now().isoformat(), round_number,
                                                        firmware.name), flush=True)
+                    print('ROUND {} CAN log: {}'.format(round_number, can_log), flush=True)
                     update_args = module.build_parser().parse_args([
                         '--update', '-c', args.can, '-n', '0x0', '-f', str(firmware),
                         '--can-log', str(can_log), '--debug'])
@@ -85,18 +90,24 @@ def run_cycles(module, args, directory):
             except KeyboardInterrupt:
                 print('Stopped by user.', flush=True)
                 return 130
+            except Exception as exc:
+                print('CYCLE ERROR {}: {}'.format(type(exc).__name__, exc), flush=True)
+                traceback.print_exc()
+                raise
     return 0
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('-c', '--can', default='can0')
-    parser.add_argument('--start', choices=('1.51', '1.52'), default='1.51')
+    parser.add_argument('--start', type=int, choices=(0, 1), default=0,
+                        help='firmware for the first round: 0=1.51, 1=1.52 (default: 0)')
     parser.add_argument('--rounds', type=int, default=0, help='total upgrades; 0 means forever')
     parser.add_argument('--interval', type=float, default=120, help='seconds after confirmed success')
     parser.add_argument('--status-timeout', type=float, default=300,
                         help='maximum seconds to confirm completion after restart ACK')
-    parser.add_argument('--log-dir', type=Path, default=Path('/tmp/bslbatt-cycle'))
+    parser.add_argument('--log-dir', type=Path, default=DEFAULT_LOG_DIR,
+                        help='log root (default: {})'.format(DEFAULT_LOG_DIR))
     args = parser.parse_args(argv)
     if args.rounds < 0 or not 0 <= args.interval < float('inf') or not 0 < args.status_timeout < float('inf'):
         parser.error('rounds/interval must be nonnegative and status-timeout must be positive and finite')

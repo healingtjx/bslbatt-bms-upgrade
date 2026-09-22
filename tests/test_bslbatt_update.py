@@ -44,6 +44,16 @@ class ProtocolTests(unittest.TestCase):
                 self.assertIn('device final status unconfirmed', output.getvalue())
                 ET.fromstring('<output>' + output.getvalue() + '</output>')
 
+    def test_transfer_complete_callback_runs_before_verification(self):
+        updater, bus, _, _ = self.make_session()
+        observed = []
+        updater.transfer_complete = lambda: observed.append([identifier for identifier, _ in bus.sent])
+        with contextlib.redirect_stdout(io.StringIO()):
+            updater.run(bytes(129))
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0][-1], 0x4670)
+        self.assertNotIn(0x4690, observed[0])
+
     def test_all_protocol_errors_stop_before_query(self):
         for request, response, code in ((0x4610, 0x4621, 1), (0x4670, 0x4681, 2),
                                        (0x4670, 0x4681, 3), (0x4690, 0x46A1, 8),
@@ -275,6 +285,27 @@ class IntegrationTests(unittest.TestCase):
                     call(['svc', '-d', service], check=True),
                     call(['svc', '-u', service], check=False),
                 ])
+
+    def test_update_restores_service_before_final_response_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'Ptest.bin'
+            path.write_bytes(b'x')
+            service = '/service/can-bus-bms.can0'
+
+            def finish_transfer(self, _firmware):
+                self.transfer_complete()
+                raise TimeoutError('timeout waiting for 0x46C1')
+
+            with patch.object(u.os.path, 'isdir', return_value=True), \
+                    patch.object(u.subprocess, 'run') as run_service, \
+                    patch.object(u, 'SocketCan'), \
+                    patch.object(u.BslbattFirmwareUpdater, 'run', finish_transfer), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(u.update(self.args(path)), 4)
+            self.assertEqual(run_service.call_args_list, [
+                call(['svc', '-d', service], check=True),
+                call(['svc', '-u', service], check=False),
+            ])
 
     def test_service_stop_failure_prevents_can_update(self):
         with tempfile.TemporaryDirectory() as directory:

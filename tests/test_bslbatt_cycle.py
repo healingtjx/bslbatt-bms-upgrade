@@ -11,7 +11,8 @@ from test_bslbatt_update import u
 import test_bslbatt_update as updater_tests
 from test_pc_tools import ack
 
-spec = importlib.util.spec_from_file_location('cycle', Path(__file__).resolve().parents[1] / 'bslbatt-cycle.py')
+spec = importlib.util.spec_from_file_location(
+    'cycle', Path(__file__).resolve().parents[1] / 'tools' / 'bslbatt-cycle.py')
 cycle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cycle)
 
@@ -19,8 +20,8 @@ spec.loader.exec_module(cycle)
 class CycleTests(unittest.TestCase):
     def test_alternation_and_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
-            args = SimpleNamespace(log_dir=Path(directory), start='1.51', rounds=3,
-                                   can='can0', interval=120)
+            args = SimpleNamespace(log_dir=Path(directory), start=0, rounds=3,
+                                   can='can0', interval=120, status_timeout=300)
             with patch.object(u, 'update', return_value=0) as update, \
                     patch.object(cycle.time, 'sleep') as sleep, \
                     contextlib.redirect_stdout(io.StringIO()):
@@ -28,11 +29,16 @@ class CycleTests(unittest.TestCase):
             self.assertEqual([Path(call.args[0].file).name for call in update.call_args_list],
                              [cycle.FIRMWARES[0], cycle.FIRMWARES[1], cycle.FIRMWARES[0]])
             self.assertEqual([call.args for call in sleep.call_args_list], [(120,), (120,)])
+            console_logs = list(Path(directory).glob('*/console.log'))
+            self.assertEqual(len(console_logs), 1)
+            console_text = console_logs[0].read_text()
+            self.assertIn('Cycle settings: can=can0 start=0 rounds=3', console_text)
+            self.assertIn('ROUND 1 CAN log:', console_text)
 
     def test_failure_stops_without_cooldown(self):
         with tempfile.TemporaryDirectory() as directory:
-            args = SimpleNamespace(log_dir=Path(directory), start='1.52', rounds=0,
-                                   can='can0', interval=120)
+            args = SimpleNamespace(log_dir=Path(directory), start=1, rounds=0,
+                                   can='can0', interval=120, status_timeout=300)
             with patch.object(u, 'update', return_value=4) as update, \
                     patch.object(cycle.time, 'sleep') as sleep, \
                     contextlib.redirect_stdout(io.StringIO()):

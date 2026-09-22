@@ -932,9 +932,11 @@ def request_payload(identifier, data, config):
 
 
 class BslbattFirmwareUpdater:
-    def __init__(self, bus, config, log, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, bus, config, log, clock=time.monotonic, sleep=time.sleep,
+                 transfer_complete=None):
         self.bus, self.config, self.log = bus, config, log
         self.clock, self.sleep = clock, sleep
+        self.transfer_complete = transfer_complete or (lambda: None)
         self.events = None
         self.last_rx_time = None
 
@@ -1062,6 +1064,10 @@ class BslbattFirmwareUpdater:
                     number, confirmed, len(firmware), confirmed * 90 // len(firmware)))
                 xml_progress(confirmed * 90 // len(firmware))
                 progress_at = self.clock() + 1
+        # The normal CAN-BMS service is only disruptive while firmware blocks are
+        # being streamed. Bring it back before verification/restart so it is not
+        # kept down during a long or missing final device response.
+        self.transfer_complete()
         xml_message('Verifying firmware')
         self.sleep(self.config.verify_delay)
         self.send(0x4690, firmware_crc(firmware, self.config))
@@ -1120,8 +1126,13 @@ def update(args):
         debug(args.debug, "stop CAN service failed: {}".format(exc))
         return EXIT_CAN_INIT_ERROR
 
+    def restore_stopped_service():
+        nonlocal stopped_service
+        service, stopped_service = stopped_service, None
+        restore_can_service(service, args.debug)
+
     def restore_on_signal(signum, _frame):
-        restore_can_service(stopped_service, args.debug)
+        restore_stopped_service()
         signal.signal(signum, signal.SIG_DFL)
         os.kill(os.getpid(), signum)
 
@@ -1137,7 +1148,8 @@ def update(args):
             log.write(str(exc))
             return EXIT_CAN_INIT_ERROR
         config = SimpleNamespace(can=can_interface, **UPGRADE_CONFIG)
-        BslbattFirmwareUpdater(bus, config, log).run(firmware)
+        BslbattFirmwareUpdater(
+            bus, config, log, transfer_complete=restore_stopped_service).run(firmware)
         return EXIT_OK
     except TimeoutError as exc:
         xml_message('Device response timeout')
@@ -1177,7 +1189,7 @@ def update(args):
             finally:
                 signal.signal(signal.SIGINT, previous_sigint)
                 signal.signal(signal.SIGTERM, previous_sigterm)
-                restore_can_service(stopped_service, args.debug)
+                restore_stopped_service()
 
 
 def build_parser():

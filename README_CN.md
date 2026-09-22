@@ -167,7 +167,8 @@ ZIP 内仍需包含唯一的 `.bin`、`.fw` 或 `.img` 载荷。打开 CAN 前�
 
 打开 CAN 执行升级前，工具会临时停止当前接口对应的 Venus OS
 `can-bus-bms.<接口>` 服务，避免其周期发送的 `0x305/0x307` 帧干扰 Bootloader 传输。
-无论升级成功、失败、超时、Ctrl+C 或 SIGTERM，都会恢复该服务；服务目录不存在时跳过。
+最后一个固件分包确认后会立即恢复该服务，再继续执行 CRC 校验和启动应用；若传输提前
+失败、超时、Ctrl+C 或 SIGTERM，也会兜底恢复。服务目录不存在时跳过。
 
 stdout 仅输出 XML 消息及进度：传输阶段 0～90，CRC 校验通过后 95，首次状态查询
 发送成功后 100。完成消息为 `Update flow completed; device final status unconfirmed`。

@@ -180,8 +180,10 @@ in bounded batches so busy CAN traffic cannot overflow the log buffer.
 
 Before opening CAN for an update, the tool temporarily stops the matching Venus
 OS `can-bus-bms.<interface>` service so its periodic `0x305/0x307` frames cannot
-disturb the bootloader transfer. The service is restored after success, failure,
-timeout, Ctrl+C, or SIGTERM. If the service directory is absent, this step is skipped.
+disturb the bootloader transfer. It restores the service immediately after the
+last firmware block is acknowledged, before verification and application restart.
+Early failure, timeout, Ctrl+C, and SIGTERM paths also restore it as a fallback.
+If the service directory is absent, this step is skipped.
 
 stdout contains XML only: stage messages and progress from 0 through 90 during
 transfer, 95 after CRC verification, and 100 after the first status query is sent.

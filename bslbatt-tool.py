@@ -601,7 +601,7 @@ def read_firmware(path):
     return data
 
 
-# Validated pc_update.py wire settings and timing, frozen for production.
+# Wire settings and pacing matched to the captured CAN Update log.
 UPGRADE_CONFIG = {
     'block_size_includes_number': False,
     'block_size_field': 'zero',
@@ -621,13 +621,13 @@ UPGRADE_CONFIG = {
     'tail_size': 'actual',
     'block_crc_scope': 'padded',
     'firmware_crc_scope': 'actual',
-    'frame_interval': 0.003,
+    'frame_interval': 0.002,
     'size_ack_delay': 0.048,
-    'block_ack_delay': 0.075,
+    'block_ack_delay': 0.047,
     'verify_delay': 0.032,
     'restart_delay': 0.032,
     'restart_settle_delay': 15.0,
-    'ack_timeout': 30.0,
+    'ack_timeout': 300.0,
 }
 
 FRAME = struct.Struct('=IB3x8s')
@@ -916,7 +916,8 @@ class BslbattFirmwareUpdater:
             self.log.frame(frame, self.config.can)
         else:
             if len(self.events) >= 4096:
-                raise ProtocolError('block event buffer overflow')
+                self.flush_frames()
+                self.events = []
             self.events.append(frame)
 
     def flush_frames(self):

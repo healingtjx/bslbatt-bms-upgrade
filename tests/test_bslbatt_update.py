@@ -28,7 +28,10 @@ class ProtocolTests(unittest.TestCase):
         for size in (1, 127, 128, 129, 256, 300):
             with self.subTest(size=size), contextlib.redirect_stdout(io.StringIO()) as output:
                 data = bytes(i % 256 for i in range(size))
-                original, old_bus, old_log, old_clock = session(reference.parser().parse_args([]))
+                reference_config = reference.parser().parse_args([])
+                reference_config.frame_interval = 0.002
+                reference_config.block_ack_delay = 0.047
+                original, old_bus, old_log, old_clock = session(reference_config)
                 original.run(data)
                 updater, bus, log, clock = self.make_session()
                 self.assertEqual(updater.run(data), 'status_query_sent')
@@ -60,8 +63,93 @@ class ProtocolTests(unittest.TestCase):
                                  ack(0x4621, [0xA1, 0, 128, 1, 0, 0, 0, 0])]
         with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(TimeoutError):
             updater.run(b'x')
-        self.assertAlmostEqual(clock.now, 30)
+        self.assertAlmostEqual(clock.now, 300)
         self.assertEqual(len(bus.sent), 1)
+
+    def test_block_without_success_ack_never_sends_next_block(self):
+        for responses, error in (([], TimeoutError),
+                                 ([ack(0x4681, [2])], u.ProtocolError)):
+            with self.subTest(responses=responses):
+                updater, bus, log, clock = self.make_session()
+                bus.responses[0x4670] = responses
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(error):
+                    updater.run(bytes(256))
+                self.assertEqual([i for i, _ in bus.sent],
+                                 [0x4610, 0x4630] + [0x4650] * 16 + [0x4670])
+                self.assertTrue(all(int.from_bytes(data[:2], 'little') == 1
+                                    for i, data in bus.sent if i == 0x4630))
+                if not responses:
+                    crc_time = next(f['monotonic'] for f in log.frames
+                                    if f['id'] == 0x4670)
+                    self.assertAlmostEqual(clock.now - crc_time, 300)
+
+    def test_lost_block_ack_times_out_without_retry(self):
+        updater, bus, log, clock = self.make_session()
+        send = bus.send
+        trailers = []
+
+        def drop_first_ack(identifier, data):
+            send(identifier, data)
+            if identifier == 0x4670:
+                trailers.append(clock.now)
+                if len(trailers) == 1:
+                    bus.queue.clear()
+
+        bus.send = drop_first_ack
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(TimeoutError):
+            updater.run(bytes(256))
+        self.assertEqual([int.from_bytes(data[:2], 'little')
+                          for i, data in bus.sent if i == 0x4630], [1])
+        self.assertEqual(sum(i == 0x4670 for i, _ in bus.sent), 1)
+        self.assertAlmostEqual(clock.now - trailers[0], 300)
+        self.assertFalse(any('BLOCK_RETRY' in line for line in log.lines))
+
+    def test_busy_bus_flushes_logs_without_aborting_block(self):
+        updater, bus, log, clock = self.make_session()
+        bus.responses[0x4670] = [ack(0x355, [50, 0], extended=False)] * 4200 + [
+            ack(0x4681, [0xA2])]
+
+        def recv(timeout):
+            if bus.queue:
+                clock.sleep(min(timeout, 0.001))
+                return bus.queue.pop(0)
+            clock.sleep(timeout)
+            return None
+
+        bus.recv = recv
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(updater.run(b'x'), 'status_query_sent')
+        self.assertEqual(sum(f['id'] == 0x355 for f in log.frames), 4200)
+        self.assertEqual(sum(i == 0x4670 for i, _ in bus.sent), 1)
+
+    def test_block_success_near_total_deadline_allows_next_block(self):
+        updater, bus, log, clock = self.make_session()
+        send, recv = bus.send, bus.recv
+        first_crc = []
+
+        def send_with_delayed_ack(identifier, data):
+            send(identifier, data)
+            if identifier == 0x4670 and not first_crc:
+                first_crc.append(clock.now)
+
+        def delayed_recv(timeout):
+            if bus.queue and bus.queue[0]['id'] == 0x4681 and clock.now < first_crc[0] + 55:
+                delay = first_crc[0] + 55 - clock.now
+                if delay >= timeout:
+                    clock.sleep(timeout)
+                    bus.queue.clear()
+                    return None
+                clock.sleep(delay)
+                return bus.queue.pop(0)
+            return recv(timeout)
+
+        bus.send, bus.recv = send_with_delayed_ack, delayed_recv
+        with contextlib.redirect_stdout(io.StringIO()):
+            updater.run(bytes(256))
+        headers = [f for f in log.frames if f['id'] == 0x4630]
+        self.assertEqual([int.from_bytes(f['data'][:2], 'little') for f in headers],
+                         [1, 2])
+        self.assertAlmostEqual(headers[-1]['monotonic'] - first_crc[0], 55.047)
 
     def test_query_send_failure_is_not_success(self):
         updater, bus, _, _ = self.make_session()

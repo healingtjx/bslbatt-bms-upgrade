@@ -34,6 +34,10 @@ import zipfile
 from types import SimpleNamespace
 
 
+# False：不处理can_server；True：启用原有启停逻辑
+ENABLE_CAN_SERVICE_CONTROL = False
+
+
 # Venus OS / 调用方通过退出码判断失败类型；0 表示成功。
 # Venus OS / callers determine the failure type from the exit code; 0 means success.
 EXIT_OK = 0
@@ -135,6 +139,8 @@ def can_bms_service_path(can_interface):
 
 def stop_can_service(can_interface, debug_enabled=False):
     """Stop the CAN-BMS producer so its 0x305/0x307 frames cannot disturb an update."""
+    if not ENABLE_CAN_SERVICE_CONTROL:
+        return None
     path = can_bms_service_path(can_interface)
     if not os.path.isdir(path):
         debug(debug_enabled, "skip stop, service not found: {}".format(path))
@@ -146,7 +152,7 @@ def stop_can_service(can_interface, debug_enabled=False):
 
 def restore_can_service(path, debug_enabled=False):
     """Restore a CAN-BMS service stopped by stop_can_service; restoration is best effort."""
-    if not path:
+    if not ENABLE_CAN_SERVICE_CONTROL or not path:
         return
     try:
         debug(debug_enabled, "+ svc -u {}".format(path))
@@ -1118,15 +1124,19 @@ def update(args):
         debug(args.debug, str(exc))
         return EXIT_FIRMWARE_ERROR
 
-    try:
-        stopped_service = stop_can_service(can_interface, args.debug)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        xml_message("CAN init failed")
-        debug(args.debug, "stop CAN service failed: {}".format(exc))
-        return EXIT_CAN_INIT_ERROR
+    stopped_service = None
+    if ENABLE_CAN_SERVICE_CONTROL:
+        try:
+            stopped_service = stop_can_service(can_interface, args.debug)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            xml_message("CAN init failed")
+            debug(args.debug, "stop CAN service failed: {}".format(exc))
+            return EXIT_CAN_INIT_ERROR
 
     def restore_stopped_service():
         nonlocal stopped_service
+        if not ENABLE_CAN_SERVICE_CONTROL:
+            return
         service, stopped_service = stopped_service, None
         restore_can_service(service, args.debug)
 

@@ -244,15 +244,20 @@ class IntegrationTests(unittest.TestCase):
         return u.build_parser().parse_args(['-c', 'can0', '-n', '0x0', '-f', str(path), '--can-log', ''])
 
     def test_single_attempt_exit_codes_and_cleanup(self):
+        self.assertFalse(u.ENABLE_CAN_SERVICE_CONTROL)
         cases = [(None, 0), (TimeoutError('timeout'), 4), (OSError('CAN error'), 3),
                  (u.ProtocolError('CRC error', 8), 10), (u.ProtocolError('write error', 4), 8),
                  (u.ProtocolError('size error', 1), 5), (u.ProtocolError('sequence error', 19), 1),
-                 (KeyboardInterrupt(), 130)]
+                 (RuntimeError('unexpected'), 1), (KeyboardInterrupt(), 130)]
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'Ptest.bin'
             path.write_bytes(b'abc')
             for error, code in cases:
                 with self.subTest(code=code), patch.object(u, 'SocketCan') as factory, \
+                        patch.object(u.os.path, 'isdir') as isdir, \
+                        patch.object(u.subprocess, 'run') as svc, \
+                        patch.object(u, 'stop_can_service', wraps=u.stop_can_service) as stop, \
+                        patch.object(u, 'restore_can_service', wraps=u.restore_can_service) as restore, \
                         patch.object(u.BslbattFirmwareUpdater, 'run', side_effect=error) as run, \
                         contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(u.update(self.args(path)), code)
@@ -260,6 +265,10 @@ class IntegrationTests(unittest.TestCase):
                     factory.return_value.__enter__.assert_called_once()
                     factory.return_value.__exit__.assert_called_once()
                     run.assert_called_once_with(b'abc')
+                    isdir.assert_not_called()
+                    svc.assert_not_called()
+                    stop.assert_not_called()
+                    restore.assert_not_called()
                     ET.fromstring('<output>' + output.getvalue() + '</output>')
 
     def test_can_init_failure(self):
@@ -271,13 +280,65 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(u.update(self.args(path)), 2)
                 factory.return_value.__exit__.assert_called_once()
 
+    def test_disabled_service_helpers_do_not_touch_service(self):
+        with patch.object(u, 'ENABLE_CAN_SERVICE_CONTROL', False), \
+                patch.object(u, 'can_bms_service_path') as path, \
+                patch.object(u.os.path, 'isdir') as isdir, \
+                patch.object(u.subprocess, 'run') as svc:
+            self.assertIsNone(u.stop_can_service('can0'))
+            u.restore_can_service('/service/can-bus-bms.can0')
+            path.assert_not_called()
+            isdir.assert_not_called()
+            svc.assert_not_called()
+
+    def test_signal_service_control_respects_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'firmware.bin'
+            path.write_bytes(b'x')
+            for enabled in (False, True):
+                for signum in (u.signal.SIGINT, u.signal.SIGTERM):
+                    handlers = {}
+
+                    def register(sig, handler):
+                        handlers[sig] = handler
+                        return u.signal.SIG_DFL
+
+                    def interrupt(_firmware):
+                        handlers[signum](signum, None)
+
+                    with self.subTest(enabled=enabled, signum=signum), \
+                            patch.object(u, 'ENABLE_CAN_SERVICE_CONTROL', enabled), \
+                            patch.object(u.signal, 'signal', side_effect=register), \
+                            patch.object(u.os, 'kill', side_effect=SystemExit(128 + signum)) as kill, \
+                            patch.object(u.os.path, 'isdir', return_value=True) as isdir, \
+                            patch.object(u.subprocess, 'run') as svc, \
+                            patch.object(u, 'restore_can_service', wraps=u.restore_can_service) as restore, \
+                            patch.object(u, 'SocketCan') as factory, \
+                            patch.object(u.BslbattFirmwareUpdater, 'run', side_effect=interrupt), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        with self.assertRaises(SystemExit):
+                            u.update(self.args(path))
+                        kill.assert_called_once_with(u.os.getpid(), signum)
+                        factory.return_value.__enter__.assert_called_once()
+                        factory.return_value.__exit__.assert_called_once()
+                        if enabled:
+                            self.assertEqual(svc.call_args_list, [
+                                call(['svc', '-d', '/service/can-bus-bms.can0'], check=True),
+                                call(['svc', '-u', '/service/can-bus-bms.can0'], check=False),
+                            ])
+                        else:
+                            isdir.assert_not_called()
+                            svc.assert_not_called()
+                            restore.assert_not_called()
+
+    @patch.object(u, 'ENABLE_CAN_SERVICE_CONTROL', True)
     def test_update_stops_and_restores_selected_can_service_on_all_exits(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'Ptest.bin'
             path.write_bytes(b'x')
             service = '/service/can-bus-bms.can0'
             for error, exit_code in ((None, 0), (TimeoutError('timeout'), 4),
-                                     (KeyboardInterrupt(), 130)):
+                                     (RuntimeError('unexpected'), 1), (KeyboardInterrupt(), 130)):
                 with self.subTest(exit_code=exit_code), \
                         patch.object(u.os.path, 'isdir', return_value=True), \
                         patch.object(u.subprocess, 'run') as run_service, \
@@ -291,6 +352,7 @@ class IntegrationTests(unittest.TestCase):
                     call(['svc', '-u', service], check=False),
                 ])
 
+    @patch.object(u, 'ENABLE_CAN_SERVICE_CONTROL', True)
     def test_service_stays_stopped_until_communication_and_can_cleanup_finish(self):
         for timeout_request in (None, 0x4690, 0x46B0):
             with self.subTest(timeout_request=timeout_request), tempfile.TemporaryDirectory() as directory:
@@ -335,6 +397,7 @@ class IntegrationTests(unittest.TestCase):
                 ])
                 self.assertEqual(events, ['-d', 'communication_finished', 'can_closed', '-u'])
 
+    @patch.object(u, 'ENABLE_CAN_SERVICE_CONTROL', True)
     def test_service_stop_failure_prevents_can_update(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'Ptest.bin'

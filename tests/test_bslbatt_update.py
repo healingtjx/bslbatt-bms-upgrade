@@ -44,15 +44,31 @@ class ProtocolTests(unittest.TestCase):
                 self.assertIn('device final status unconfirmed', output.getvalue())
                 ET.fromstring('<output>' + output.getvalue() + '</output>')
 
-    def test_transfer_complete_callback_runs_before_verification(self):
+    def test_service_restore_runs_after_starting_message_before_restart(self):
         updater, bus, _, _ = self.make_session()
         observed = []
-        updater.transfer_complete = lambda: observed.append([identifier for identifier, _ in bus.sent])
-        with contextlib.redirect_stdout(io.StringIO()):
+        output = io.StringIO()
+        updater.before_start_application = lambda: observed.append(
+            ([identifier for identifier, _ in bus.sent], output.getvalue()))
+        with contextlib.redirect_stdout(output):
             updater.run(bytes(129))
         self.assertEqual(len(observed), 1)
-        self.assertEqual(observed[0][-1], 0x4670)
-        self.assertNotIn(0x4690, observed[0])
+        identifiers, messages = observed[0]
+        self.assertEqual(identifiers[-1], 0x4690)
+        self.assertNotIn(0x46B0, identifiers)
+        self.assertIn('<message type="normal">Starting application</message>', messages)
+
+    def test_verification_failure_does_not_reach_start_application_callback(self):
+        for responses, error in (([], TimeoutError),
+                                 ([ack(0x46A1, [8])], u.ProtocolError)):
+            with self.subTest(responses=responses):
+                updater, bus, _, _ = self.make_session()
+                bus.responses[0x4690] = responses
+                observed = []
+                updater.before_start_application = lambda: observed.append(True)
+                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(error):
+                    updater.run(bytes(129))
+                self.assertEqual(observed, [])
 
     def test_all_protocol_errors_stop_before_query(self):
         for request, response, code in ((0x4610, 0x4621, 1), (0x4670, 0x4681, 2),
@@ -292,14 +308,14 @@ class IntegrationTests(unittest.TestCase):
             path.write_bytes(b'x')
             service = '/service/can-bus-bms.can0'
 
-            def finish_transfer(self, _firmware):
-                self.transfer_complete()
+            def start_application(self, _firmware):
+                self.before_start_application()
                 raise TimeoutError('timeout waiting for 0x46C1')
 
             with patch.object(u.os.path, 'isdir', return_value=True), \
                     patch.object(u.subprocess, 'run') as run_service, \
                     patch.object(u, 'SocketCan'), \
-                    patch.object(u.BslbattFirmwareUpdater, 'run', finish_transfer), \
+                    patch.object(u.BslbattFirmwareUpdater, 'run', start_application), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(u.update(self.args(path)), 4)
             self.assertEqual(run_service.call_args_list, [

@@ -933,10 +933,10 @@ def request_payload(identifier, data, config):
 
 class BslbattFirmwareUpdater:
     def __init__(self, bus, config, log, clock=time.monotonic, sleep=time.sleep,
-                 transfer_complete=None):
+                 before_start_application=None):
         self.bus, self.config, self.log = bus, config, log
         self.clock, self.sleep = clock, sleep
-        self.transfer_complete = transfer_complete or (lambda: None)
+        self.before_start_application = before_start_application or (lambda: None)
         self.events = None
         self.last_rx_time = None
 
@@ -1064,16 +1064,15 @@ class BslbattFirmwareUpdater:
                     number, confirmed, len(firmware), confirmed * 90 // len(firmware)))
                 xml_progress(confirmed * 90 // len(firmware))
                 progress_at = self.clock() + 1
-        # The normal CAN-BMS service is only disruptive while firmware blocks are
-        # being streamed. Bring it back before verification/restart so it is not
-        # kept down during a long or missing final device response.
-        self.transfer_complete()
         xml_message('Verifying firmware')
         self.sleep(self.config.verify_delay)
         self.send(0x4690, firmware_crc(firmware, self.config))
         self.wait_ack(0x46A1, {0xA3})
         xml_progress(95)
         xml_message('Starting application')
+        # Keep CAN-BMS stopped through verification, then restore it before
+        # starting the application and waiting for the restart response.
+        self.before_start_application()
         self.sleep(self.config.restart_delay)
         self.send(0x46B0, b'')
         self.wait_ack(0x46C1, {10, 11})
@@ -1149,7 +1148,7 @@ def update(args):
             return EXIT_CAN_INIT_ERROR
         config = SimpleNamespace(can=can_interface, **UPGRADE_CONFIG)
         BslbattFirmwareUpdater(
-            bus, config, log, transfer_complete=restore_stopped_service).run(firmware)
+            bus, config, log, before_start_application=restore_stopped_service).run(firmware)
         return EXIT_OK
     except TimeoutError as exc:
         xml_message('Device response timeout')

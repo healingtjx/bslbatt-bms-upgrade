@@ -49,19 +49,22 @@ class CycleTests(unittest.TestCase):
     def test_final_status_is_required(self):
         for status, expected in ((13, None), (14, u.ProtocolError), (16, TimeoutError),
                                  (None, TimeoutError)):
-            with self.subTest(status=status):
-                original, bus, log, clock = updater_tests.ProtocolTests().make_session()
-                bus.responses[0x46D0] = [] if status is None else [ack(0x46E1, [status])]
-                updater = cycle.confirmed_updater(u, 25)(bus, original.config, log, clock, clock.sleep)
-                with contextlib.redirect_stdout(io.StringIO()) as output:
-                    if expected:
-                        with self.assertRaises(expected):
-                            updater.poll_status()
-                        self.assertNotIn('Device update successful', output.getvalue())
-                    else:
-                        self.assertEqual(updater.poll_status(), 'device_success')
-                if expected is TimeoutError:
-                    self.assertAlmostEqual(clock.now, 25)
+            for suffix in ([], [0] * 7, [1], [1] + [0] * 6):
+                with self.subTest(status=status, suffix=suffix):
+                    original, bus, log, clock = updater_tests.ProtocolTests().make_session()
+                    bus.responses[0x46D0] = [] if status is None else [ack(0x46E1, [status] + suffix)]
+                    updater = cycle.confirmed_updater(u, 25)(bus, original.config, log, clock, clock.sleep)
+                    with contextlib.redirect_stdout(io.StringIO()) as output:
+                        if expected:
+                            with self.assertRaises(expected):
+                                updater.poll_status()
+                            self.assertNotIn('Device update successful', output.getvalue())
+                        else:
+                            self.assertEqual(updater.poll_status(), 'device_success')
+                            self.assertEqual(len(bus.sent), 1)
+                            self.assertFalse(any('No status ACK' in line for line in log.lines))
+                    if expected is TimeoutError:
+                        self.assertAlmostEqual(clock.now, 25)
 
 
 if __name__ == '__main__':

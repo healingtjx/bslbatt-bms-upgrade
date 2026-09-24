@@ -728,6 +728,11 @@ def unpack_frame(raw, direction='RX'):
 def response_payload(identifier, data):
     """Accept logical payload or an 8-byte frame with zero-only trailing padding."""
     expected = 3 if data and (identifier, data[0]) in ((0x4621, 0xA1), (0x46A1, 0xA3)) else 1
+    # STATUS_ACK also carries an observed second byte (e.g. 0D 01).
+    # Preserve it as extra data without assigning undocumented semantics.
+    # Continue accepting legacy one-byte status responses.
+    if identifier == 0x46E1 and len(data) in (2, 8):
+        expected = 2
     if len(data) == expected:
         return data
     if len(data) == 8 and not any(data[expected:]):

@@ -44,6 +44,21 @@ class ProtocolTests(unittest.TestCase):
                 self.assertIn('device final status unconfirmed', output.getvalue())
                 ET.fromstring('<output>' + output.getvalue() + '</output>')
 
+    def test_status_ack_extra_byte_and_padding(self):
+        for module in (u, reference):
+            with self.subTest(module=module.__name__):
+                payload = bytes.fromhex('0D 01 00 00 00 00 00 00')
+                self.assertEqual(module.response_payload(0x46E1, payload), b'\x0d\x01')
+                self.assertIn('status=0x0D', module.decode(0x46E1, payload))
+                self.assertIn('extra=01', module.decode(0x46E1, payload))
+                for invalid in (b'', b'\x0d\x01\x00',
+                                bytes.fromhex('0D 01 02 00 00 00 00 00')):
+                    with self.assertRaises(ValueError):
+                        module.response_payload(0x46E1, invalid)
+                # The extra byte is specific to STATUS_ACK, not other ACKs.
+                with self.assertRaises(ValueError):
+                    module.response_payload(0x4681, bytes.fromhex('A2 01 00 00 00 00 00 00'))
+
     def test_all_protocol_errors_stop_before_query(self):
         for request, response, code in ((0x4610, 0x4621, 1), (0x4670, 0x4681, 2),
                                        (0x4670, 0x4681, 3), (0x4690, 0x46A1, 8),

@@ -24,14 +24,14 @@ class CycleTests(unittest.TestCase):
                                    can='can0', interval=120, status_timeout=300)
             with patch.object(u, 'update', return_value=0) as update, \
                     patch.object(cycle.time, 'sleep') as sleep, \
-                    contextlib.redirect_stdout(io.StringIO()):
+                    contextlib.redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(cycle.run_cycles(u, args, Path(directory)), 0)
             self.assertEqual([Path(call.args[0].file).name for call in update.call_args_list],
                              [cycle.FIRMWARES[0], cycle.FIRMWARES[1], cycle.FIRMWARES[0]])
             self.assertEqual([call.args for call in sleep.call_args_list], [(120,), (120,)])
             console_logs = list(Path(directory).glob('*/console.log'))
-            self.assertEqual(len(console_logs), 1)
-            console_text = console_logs[0].read_text()
+            self.assertEqual(console_logs, [])
+            console_text = output.getvalue()
             self.assertIn('Cycle settings: can=can0 start=0 rounds=3', console_text)
             self.assertIn('ROUND 1 CAN log:', console_text)
 

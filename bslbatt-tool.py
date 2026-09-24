@@ -35,7 +35,7 @@ from types import SimpleNamespace
 
 
 # False：不处理can_server；True：启用原有启停逻辑
-ENABLE_CAN_SERVICE_CONTROL = False
+ENABLE_CAN_SERVICE_CONTROL = True
 
 
 # Venus OS / 调用方通过退出码判断失败类型；0 表示成功。
@@ -155,10 +155,16 @@ def restore_can_service(path, debug_enabled=False):
     if not ENABLE_CAN_SERVICE_CONTROL or not path:
         return
     try:
-        debug(debug_enabled, "+ svc -u {}".format(path))
-        subprocess.run(["svc", "-u", path], check=False)
+        result = subprocess.run(["svc", "-u", path], check=False)
     except Exception as exc:
-        debug(debug_enabled, "restore service {} failed: {}".format(path, exc))
+        message = "restore service {} failed: {}".format(path, exc)
+    else:
+        message = "svc -u {} completed, exit={}".format(path, result.returncode)
+    # Diagnostic output must never prevent the restore command from running.
+    try:
+        debug(debug_enabled, message)
+    except OSError:
+        pass
 
 
 def xml_escape(value):

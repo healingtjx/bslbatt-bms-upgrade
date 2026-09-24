@@ -291,6 +291,20 @@ class IntegrationTests(unittest.TestCase):
             isdir.assert_not_called()
             svc.assert_not_called()
 
+    def test_restore_runs_before_failing_diagnostic_output(self):
+        service = '/service/can-bus-bms.can0'
+        for command_error in (None, OSError(28, 'No space left on device')):
+            with self.subTest(command_error=command_error), \
+                    patch.object(u, 'ENABLE_CAN_SERVICE_CONTROL', True), \
+                    patch.object(u.subprocess, 'run', side_effect=command_error) as svc:
+                def failing_debug(*args):
+                    svc.assert_called_once_with(['svc', '-u', service], check=False)
+                    raise OSError(28, 'No space left on device')
+
+                with patch.object(u, 'debug', side_effect=failing_debug):
+                    u.restore_can_service(service, True)
+                svc.assert_called_once_with(['svc', '-u', service], check=False)
+
     def test_signal_service_control_respects_switch(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'firmware.bin'
@@ -381,6 +395,7 @@ class IntegrationTests(unittest.TestCase):
                             self.assertEqual(bus.sent[-1][0], 0x46D0)
                             self.assertIn('Update flow completed', output.getvalue())
                     events.append(command[1])
+                    return SimpleNamespace(returncode=0)
 
                 with patch.object(u.os.path, 'isdir', return_value=True), \
                         patch.object(u.subprocess, 'run', side_effect=service_command) as run_service, \

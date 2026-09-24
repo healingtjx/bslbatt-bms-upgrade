@@ -10,8 +10,8 @@ import time
 import traceback
 
 
-FIRMWARES = ('P41288V110-41289-1.51T-000.bin',
-             'P41288V110-41289-1.52T-000.bin')
+FIRMWARES = ('P41288V110-41289-1.53T-000.bin',
+             'P41288V110-41289-1.54T-000.bin')
 DEFAULT_LOG_DIR = Path('/opt/victronenergy/mqtt-rpc/thirdparty/bslbatt/logs')
 
 

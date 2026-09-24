@@ -44,32 +44,6 @@ class ProtocolTests(unittest.TestCase):
                 self.assertIn('device final status unconfirmed', output.getvalue())
                 ET.fromstring('<output>' + output.getvalue() + '</output>')
 
-    def test_service_restore_runs_after_starting_message_before_restart(self):
-        updater, bus, _, _ = self.make_session()
-        observed = []
-        output = io.StringIO()
-        updater.before_start_application = lambda: observed.append(
-            ([identifier for identifier, _ in bus.sent], output.getvalue()))
-        with contextlib.redirect_stdout(output):
-            updater.run(bytes(129))
-        self.assertEqual(len(observed), 1)
-        identifiers, messages = observed[0]
-        self.assertEqual(identifiers[-1], 0x4690)
-        self.assertNotIn(0x46B0, identifiers)
-        self.assertIn('<message type="normal">Starting application</message>', messages)
-
-    def test_verification_failure_does_not_reach_start_application_callback(self):
-        for responses, error in (([], TimeoutError),
-                                 ([ack(0x46A1, [8])], u.ProtocolError)):
-            with self.subTest(responses=responses):
-                updater, bus, _, _ = self.make_session()
-                bus.responses[0x4690] = responses
-                observed = []
-                updater.before_start_application = lambda: observed.append(True)
-                with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(error):
-                    updater.run(bytes(129))
-                self.assertEqual(observed, [])
-
     def test_all_protocol_errors_stop_before_query(self):
         for request, response, code in ((0x4610, 0x4621, 1), (0x4670, 0x4681, 2),
                                        (0x4670, 0x4681, 3), (0x4690, 0x46A1, 8),
@@ -302,26 +276,49 @@ class IntegrationTests(unittest.TestCase):
                     call(['svc', '-u', service], check=False),
                 ])
 
-    def test_update_restores_service_before_final_response_timeout(self):
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'Ptest.bin'
-            path.write_bytes(b'x')
-            service = '/service/can-bus-bms.can0'
+    def test_service_stays_stopped_until_communication_and_can_cleanup_finish(self):
+        for timeout_request in (None, 0x4690, 0x46B0):
+            with self.subTest(timeout_request=timeout_request), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / 'Ptest.bin'
+                path.write_bytes(b'x')
+                service = '/service/can-bus-bms.can0'
+                _, bus, _, clock = session()
+                if timeout_request is not None:
+                    bus.responses[timeout_request] = []
+                original_run = u.BslbattFirmwareUpdater.run
+                output = io.StringIO()
+                events = []
 
-            def start_application(self, _firmware):
-                self.before_start_application()
-                raise TimeoutError('timeout waiting for 0x46C1')
+                def run_update(updater, firmware):
+                    updater.clock, updater.sleep = clock, clock.sleep
+                    try:
+                        return original_run(updater, firmware)
+                    finally:
+                        self.assertEqual(events, ['-d'])
+                        events.append('communication_finished')
 
-            with patch.object(u.os.path, 'isdir', return_value=True), \
-                    patch.object(u.subprocess, 'run') as run_service, \
-                    patch.object(u, 'SocketCan'), \
-                    patch.object(u.BslbattFirmwareUpdater, 'run', start_application), \
-                    contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(u.update(self.args(path)), 4)
-            self.assertEqual(run_service.call_args_list, [
-                call(['svc', '-d', service], check=True),
-                call(['svc', '-u', service], check=False),
-            ])
+                def service_command(command, **kwargs):
+                    if command[1] == '-u':
+                        self.assertEqual(events, ['-d', 'communication_finished', 'can_closed'])
+                        if timeout_request is None:
+                            self.assertEqual(bus.sent[-1][0], 0x46D0)
+                            self.assertIn('Update flow completed', output.getvalue())
+                    events.append(command[1])
+
+                with patch.object(u.os.path, 'isdir', return_value=True), \
+                        patch.object(u.subprocess, 'run', side_effect=service_command) as run_service, \
+                        patch.object(u, 'SocketCan') as factory, \
+                        patch.object(u.BslbattFirmwareUpdater, 'run', run_update), \
+                        contextlib.redirect_stdout(output):
+                    factory.return_value.send.side_effect = bus.send
+                    factory.return_value.recv.side_effect = bus.recv
+                    factory.return_value.__exit__.side_effect = lambda: events.append('can_closed')
+                    self.assertEqual(u.update(self.args(path)), 0 if timeout_request is None else 4)
+                self.assertEqual(run_service.call_args_list, [
+                    call(['svc', '-d', service], check=True),
+                    call(['svc', '-u', service], check=False),
+                ])
+                self.assertEqual(events, ['-d', 'communication_finished', 'can_closed', '-u'])
 
     def test_service_stop_failure_prevents_can_update(self):
         with tempfile.TemporaryDirectory() as directory:

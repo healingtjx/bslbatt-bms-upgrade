@@ -932,11 +932,9 @@ def request_payload(identifier, data, config):
 
 
 class BslbattFirmwareUpdater:
-    def __init__(self, bus, config, log, clock=time.monotonic, sleep=time.sleep,
-                 before_start_application=None):
+    def __init__(self, bus, config, log, clock=time.monotonic, sleep=time.sleep):
         self.bus, self.config, self.log = bus, config, log
         self.clock, self.sleep = clock, sleep
-        self.before_start_application = before_start_application or (lambda: None)
         self.events = None
         self.last_rx_time = None
 
@@ -1070,9 +1068,6 @@ class BslbattFirmwareUpdater:
         self.wait_ack(0x46A1, {0xA3})
         xml_progress(95)
         xml_message('Starting application')
-        # Keep CAN-BMS stopped through verification, then restore it before
-        # starting the application and waiting for the restart response.
-        self.before_start_application()
         self.sleep(self.config.restart_delay)
         self.send(0x46B0, b'')
         self.wait_ack(0x46C1, {10, 11})
@@ -1147,8 +1142,7 @@ def update(args):
             log.write(str(exc))
             return EXIT_CAN_INIT_ERROR
         config = SimpleNamespace(can=can_interface, **UPGRADE_CONFIG)
-        BslbattFirmwareUpdater(
-            bus, config, log, before_start_application=restore_stopped_service).run(firmware)
+        BslbattFirmwareUpdater(bus, config, log).run(firmware)
         return EXIT_OK
     except TimeoutError as exc:
         xml_message('Device response timeout')
@@ -1188,6 +1182,7 @@ def update(args):
             finally:
                 signal.signal(signal.SIGINT, previous_sigint)
                 signal.signal(signal.SIGTERM, previous_sigterm)
+                # Restore only after all upgrade communication and CAN cleanup.
                 restore_stopped_service()
 
 

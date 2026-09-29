@@ -35,7 +35,7 @@ from types import SimpleNamespace
 
 
 # False：不处理can_server；True：启用原有启停逻辑
-ENABLE_CAN_SERVICE_CONTROL = True
+ENABLE_CAN_SERVICE_CONTROL = False
 
 
 # Venus OS / 调用方通过退出码判断失败类型；0 表示成功。

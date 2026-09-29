@@ -172,10 +172,15 @@ For example: `-c can0 -n 0x0 -f /data/vrmfilescache/P41288V110-41289-1.52T-000.b
 
 Control frames are zero-padded to 8 bytes. Following the successful reference
 capture, frame spacing is 2 ms, the initial size-ACK delay is 48 ms, inter-block
-ACK delay is 47 ms, and verification/restart delays are 32 ms each. Other stages have a
-300-second ACK timeout. Each block is sent exactly once. After sending its block
-CRC, wait up to 300 seconds for `0x4681/A2`; a timeout or explicit device error
-aborts the upgrade without retransmitting the block. Received frames are logged
+ACK delay is 47 ms, and verification/restart delays are 32 ms each. The firmware size,
+full CRC, and restart ACKs each have a 10-second timeout, starting after their request
+is sent; fixed stage delays do not count. After each block CRC, wait up to 500 ms for `0x4681/A2`.
+If no valid `0x4681` arrives or its status is not `A2`, resend the entire block
+(number, 16 data frames, and CRC) once 500 ms have elapsed since its `0x4670` frame.
+After a timeout, retry immediately without an additional delay, at most three times. Only `A2`
+confirms a block and permits the next one; a fourth unsuccessful attempt fails the
+upgrade. If an ACK is lost after the device has written a block, a duplicate number
+may produce error `3`; this case needs validation on hardware. Received frames are logged
 in bounded batches so busy CAN traffic cannot overflow the log buffer.
 
 Before opening CAN for an update, the tool temporarily stops the matching Venus

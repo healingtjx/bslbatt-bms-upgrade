@@ -669,7 +669,9 @@ UPGRADE_CONFIG = {
     'verify_delay': 0.032,
     'restart_delay': 0.032,
     'restart_settle_delay': 15.0,
-    'ack_timeout': 300.0,
+    'ack_timeout': 10.0,
+    'block_ack_timeout': 0.5,
+    'block_max_retries': 3,
 }
 
 FRAME = struct.Struct('=IB3x8s')
@@ -980,7 +982,8 @@ class BslbattFirmwareUpdater:
                             error=False, direction='TX'))
         return completed
 
-    def wait_ack(self, identifier, accepted, timeout=None, deadline=None):
+    def wait_ack(self, identifier, accepted, timeout=None, deadline=None,
+                 reject_malformed=False):
         if deadline is None:
             deadline = self.clock() + (self.config.ack_timeout if timeout is None else timeout)
         while True:
@@ -996,7 +999,10 @@ class BslbattFirmwareUpdater:
                 continue
             try:
                 data = response_payload(identifier, frame['data'])
-            except ValueError:
+            except ValueError as exc:
+                if reject_malformed:
+                    raise ProtocolError('invalid payload for 0x{:04X}: {}'.format(
+                        identifier, exc)) from exc
                 continue
             if data[0] not in VALID_CODES[identifier]:
                 raise ProtocolError('unexpected status 0x{:02X} for 0x{:04X}'.format(data[0], identifier))
@@ -1041,37 +1047,52 @@ class BslbattFirmwareUpdater:
                            for identifier, data in frames]
             if previous_ack is not None:
                 self.sleep(max(0, previous_ack + self.config.block_ack_delay - self.clock()))
-            self.events = [] if self.log.frames_enabled else None
-            starts, completed, submitted = [], None, 0
-            ack_time, status = None, 'no_ack'
-            try:
-                for identifier, data in wire_frames:
-                    if completed is not None:
-                        self.sleep(max(0, completed + self.config.frame_interval - self.clock()))
-                    starts.append(self.clock())
-                    completed = self.send(identifier, data)
-                    submitted += 1
-                response = self.wait_ack(0x4681, {0xA2},
-                                         deadline=completed + self.config.ack_timeout)
-                ack_time = self.last_rx_time
-                status = '0x{:02X}'.format(response[0])
-            except (OSError, ValueError, ProtocolError, KeyboardInterrupt) as exc:
-                status = '{}: {}'.format(type(exc).__name__, exc)
-                self.flush_frames()
-                self.log.write(block_diagnostic(number, length, frames, self.config))
-                self.log.write('BLOCK_FAILED block={} last_confirmed={} {}'.format(number, number - 1, status))
-                raise
-            finally:
-                self.flush_frames()
-                intervals = [(b - a) * 1000 for a, b in zip(starts, starts[1:])]
-                self.log.detail('BLOCK_TIMING block={} submitted={} application_timing=true '
-                                'duration_ms={} gap_min_ms={} gap_median_ms={} gap_max_ms={} '
-                                'ack_to_next_ms={} crc_to_ack_ms={} status={}'.format(
-                    number, submitted, (completed - starts[0]) * 1000 if completed is not None else None,
-                    min(intervals) if intervals else None, median(intervals) if intervals else None,
-                    max(intervals) if intervals else None,
-                    (starts[0] - previous_ack) * 1000 if previous_ack is not None else None,
-                    (ack_time - completed) * 1000 if ack_time is not None else None, status))
+            for attempt in range(1, self.config.block_max_retries + 2):
+                self.events = [] if self.log.frames_enabled else None
+                starts, completed, submitted = [], None, 0
+                ack_time, status, retry_reason = None, 'no_ack', None
+                try:
+                    for identifier, data in wire_frames:
+                        if completed is not None:
+                            self.sleep(max(0, completed + self.config.frame_interval - self.clock()))
+                        starts.append(self.clock())
+                        completed = self.send(identifier, data)
+                        submitted += 1
+                    response = self.wait_ack(0x4681, {0xA2},
+                                             deadline=completed + self.config.block_ack_timeout,
+                                             reject_malformed=True)
+                    ack_time = self.last_rx_time
+                    status = '0x{:02X}'.format(response[0])
+                except (OSError, ValueError, ProtocolError, TimeoutError, KeyboardInterrupt) as exc:
+                    status = '{}: {}'.format(type(exc).__name__, exc)
+                    if attempt <= self.config.block_max_retries:
+                        if isinstance(exc, TimeoutError) and submitted == len(wire_frames):
+                            retry_reason = 'timeout'
+                        elif isinstance(exc, ProtocolError):
+                            retry_reason = 'block_ack_not_a2'
+                    if retry_reason is None:
+                        self.flush_frames()
+                        self.log.write(block_diagnostic(number, length, frames, self.config))
+                        self.log.write('BLOCK_FAILED block={} attempt={} last_confirmed={} {}'.format(
+                            number, attempt, number - 1, status))
+                        raise
+                finally:
+                    self.flush_frames()
+                    intervals = [(b - a) * 1000 for a, b in zip(starts, starts[1:])]
+                    self.log.detail('BLOCK_TIMING block={} attempt={} submitted={} application_timing=true '
+                                    'duration_ms={} gap_min_ms={} gap_median_ms={} gap_max_ms={} '
+                                    'ack_to_next_ms={} crc_to_ack_ms={} status={}'.format(
+                        number, attempt, submitted,
+                        (completed - starts[0]) * 1000 if completed is not None else None,
+                        min(intervals) if intervals else None, median(intervals) if intervals else None,
+                        max(intervals) if intervals else None,
+                        (starts[0] - previous_ack) * 1000 if previous_ack is not None and attempt == 1 else None,
+                        (ack_time - completed) * 1000 if ack_time is not None else None, status))
+                if retry_reason is None:
+                    break
+                self.log.write('BLOCK_RETRY block={} next_attempt={} max_attempts={} reason={}'.format(
+                    number, attempt + 1, self.config.block_max_retries + 1, retry_reason))
+                self.sleep(max(0, completed + self.config.block_ack_timeout - self.clock()))
             previous_ack = ack_time
             confirmed += length
             if self.clock() >= progress_at or confirmed == len(firmware):
